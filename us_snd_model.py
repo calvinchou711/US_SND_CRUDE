@@ -1,499 +1,402 @@
-"""Monthly PADD and U.S. crude-oil supply/demand model.
-
-The model reads only the source archives under ``data/eia`` and ``data/jodi``.
-EIA supplies PADD-level observations; JODI supplies an independent U.S.-level
-benchmark because JODI does not publish PADD observations.
-"""
-
-from __future__ import annotations
-
+"""Monthly crude-oil (including SPR) SnD: PADD models, chronological evaluation, U.S. sums."""
+from pathlib import Path
 import argparse
 import json
-from dataclasses import dataclass
-from pathlib import Path
-
+import platform
+import warnings
+import joblib
 import numpy as np
 import pandas as pd
-from sklearn.linear_model import LinearRegression
+import sklearn
+import xgboost
+from sklearn.exceptions import ConvergenceWarning
+from sklearn.linear_model import LinearRegression, Ridge
+from sklearn.ensemble import RandomForestRegressor, VotingRegressor
+from sklearn.neural_network import MLPRegressor
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler, PolynomialFeatures, SplineTransformer
+from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
 from sklearn.model_selection import TimeSeriesSplit
+from xgboost import XGBRegressor
+from crude_data import HERE, PADD_NAMES, FLOWS, SIGNS, load_panel, refresh_data
+
+BASELINES = ['persistence', 'seasonal_naive', 'seasonal_change', 'forecast_flow_identity']
+LEARNED = ['legacy_constrained_level', 'constrained_level', 'ridge_change', 'seasonal_ridge_change',
+           'polynomial_ridge_change', 'spline_ridge_change', 'random_forest_change',
+           'xgboost_change', 'neural_network_change', 'rolling_ridge_change',
+           'damped_ridge_change', 'ensemble_change']
+MODELS = BASELINES + LEARNED
+BASE_FEATURES = ['stock_lag1', 'stock_lag12', 'change_lag1'] + ['lag_' + c for c in FLOWS]
+FEATURES = BASE_FEATURES + ['sin_month', 'cos_month']
 
 
-PROJECT_ROOT = Path(__file__).resolve().parents[2]
-DEFAULT_EIA_FILE = PROJECT_ROOT / "data/eia/petroleum/data/EIA_XLS_Monthly.parquet"
-DEFAULT_JODI_FILE = PROJECT_ROOT / "data/jodi/JODI.parquet"
-DEFAULT_OUTPUT_DIR = Path(__file__).resolve().parent / "model_output"
-
-PADD_NAMES = {
-    1: "East Coast",
-    2: "Midwest",
-    3: "Gulf Coast",
-    4: "Rocky Mountain",
-    5: "West Coast",
-}
-EIA_COMPONENT_CODES = {
-    "production_kb": "FPP",
-    "demand_kb": "RIP",  # crude input to refineries is crude-oil demand
-    "imports_kb": "IMP",
-    "exports_kb": "EXP",
-    "stock_kb": "STP",
-    "reported_stock_change_kb": "SCP",
-}
-FEATURE_COLUMNS = [
-    "stock_t_kb",
-    "production_kb",
-    "demand_outflow_kb",
-    "imports_kb",
-    "exports_outflow_kb",
-]
-JODI_FLOW_MAP = {
-    "CLOSTLV": "jodi_stock_kb",
-    "INDPROD": "jodi_production_kb",
-    "REFINOBS": "jodi_demand_kb",
-    "TOTIMPSB": "jodi_imports_kb",
-    "TOTEXPSB": "jodi_exports_kb",
-    "STOCKCH": "jodi_reported_stock_change_kb",
-    "STATDIFF": "jodi_statistical_difference_kb",
-}
+def seasonal_design(months, origin):
+    dates = pd.DatetimeIndex(months)
+    trend = ((dates.year - origin.year) * 12 + dates.month - origin.month).to_numpy() / 12
+    return np.column_stack([trend] + [(dates.month == m).astype(float) for m in range(2, 13)])
 
 
-@dataclass
-class ModelResults:
-    padd: pd.DataFrame
-    us: pd.DataFrame
-    jodi: pd.DataFrame
-    metrics: pd.DataFrame
-    coefficients: pd.DataFrame
-    forecasts: pd.DataFrame
-    padd_forecast_12m: pd.DataFrame
-    us_forecast_12m: pd.DataFrame
+def forecast_flows(history, months):
+    """Fit monthly daily-rate seasonality + trend on the last 60 observed months."""
+    train = history.tail(60)
+    model = LinearRegression()
+    model.fit(seasonal_design(train.month, train.month.iloc[0]),
+              train[FLOWS].to_numpy() / train.month.dt.days_in_month.to_numpy()[:, None])
+    rates = model.predict(seasonal_design(months, train.month.iloc[0]))
+    flows = rates * pd.DatetimeIndex(months).days_in_month.to_numpy()[:, None]
+    for c in ['production_kb', 'demand_kb', 'imports_kb', 'exports_kb']:
+        flows[:, FLOWS.index(c)] = np.maximum(flows[:, FLOWS.index(c)], 0)
+    # Net receipts, adjustments and transfers can be negative.
+    return pd.DataFrame(flows, columns=FLOWS, index=pd.DatetimeIndex(months))
 
 
-def _eia_series_key(component: str, padd: int) -> str:
-    """Return the legacy EIA monthly source key for a crude PADD component."""
-    return f"MCR{EIA_COMPONENT_CODES[component]}{padd}1"
+def feature_row(history, month):
+    last = history.iloc[-1]
+    row = {'stock_lag1': last.stock_kb, 'stock_lag12': history.iloc[-12].stock_kb,
+           'change_lag1': last.stock_kb - history.iloc[-2].stock_kb,
+           'sin_month': np.sin(2*np.pi*month.month/12), 'cos_month': np.cos(2*np.pi*month.month/12)}
+    changes = history.set_index('month').stock_kb.diff().tail(60)
+    seasonal = changes[changes.index.month == month.month].dropna()
+    row['seasonal_change'] = float(seasonal.mean()) if len(seasonal) else 0.0
+    row.update({'lag_' + c: last[c] * sign for c, sign in zip(FLOWS, SIGNS)})
+    return row
 
 
-def load_eia_padd(path: Path = DEFAULT_EIA_FILE) -> pd.DataFrame:
-    """Load and reshape EIA monthly crude observations for PADDs 1-5."""
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"EIA source archive not found: {path}")
-
-    key_map = {
-        _eia_series_key(component, padd): (padd, component)
-        for padd in PADD_NAMES
-        for component in EIA_COMPONENT_CODES
-    }
-    raw = pd.read_parquet(
-        path,
-        columns=["DATE", "EIA_SOURCEKEY", "VALUE"],
-        filters=[("EIA_SOURCEKEY", "in", list(key_map))],
-    )
-    if raw.empty:
-        raise ValueError("No required PADD crude series were found in the EIA archive")
-    raw["month"] = pd.to_datetime(raw["DATE"]).dt.to_period("M").dt.to_timestamp()
-    raw[["padd", "component"]] = raw["EIA_SOURCEKEY"].map(key_map).apply(pd.Series)
-    raw["VALUE"] = pd.to_numeric(raw["VALUE"], errors="coerce")
-
-    duplicate = raw.duplicated(["month", "padd", "component"], keep=False)
-    if duplicate.any():
-        conflicting = (
-            raw.loc[duplicate]
-            .groupby(["month", "padd", "component"])["VALUE"]
-            .nunique(dropna=False)
-        )
-        if (conflicting > 1).any():
-            raise ValueError("Conflicting duplicate observations in EIA source archive")
-        raw = raw.drop_duplicates(["month", "padd", "component"])
-
-    wide = (
-        raw.pivot(index=["month", "padd"], columns="component", values="VALUE")
-        .reset_index()
-        .sort_values(["padd", "month"])
-    )
-    required = list(EIA_COMPONENT_CODES)
-    missing = [column for column in required if column not in wide]
-    if missing:
-        raise ValueError(f"Missing EIA model components: {missing}")
-    # Regional export cells are blank in EIA months with no reported PADD
-    # exports. Preserve that provenance in a flag and use zero in the balance,
-    # which is the additive convention required to form the national total.
-    wide["exports_imputed_zero"] = wide["exports_kb"].isna()
-    wide["exports_kb"] = wide["exports_kb"].fillna(0.0)
-    wide["padd_name"] = wide["padd"].map(PADD_NAMES)
-    wide["stock_t_kb"] = wide["stock_kb"]
-    wide["stock_t1_actual_kb"] = wide.groupby("padd")["stock_kb"].shift(-1)
-    wide["demand_outflow_kb"] = -wide["demand_kb"]
-    wide["exports_outflow_kb"] = -wide["exports_kb"]
-    wide["fundamental_balance_kb"] = (
-        wide["production_kb"]
-        - wide["demand_kb"]
-        + wide["imports_kb"]
-        - wide["exports_kb"]
-    )
-    wide["identity_stock_t1_kb"] = wide["stock_t_kb"] + wide["fundamental_balance_kb"]
-    wide["identity_error_kb"] = wide["stock_t1_actual_kb"] - wide["identity_stock_t1_kb"]
-    return wide.reset_index(drop=True)
+def supervised(history):
+    rows = []
+    for i in range(12, len(history)):
+        past, current = history.iloc[:i], history.iloc[i]
+        row = feature_row(past, current.month)
+        flow = forecast_flows(past, [current.month]).iloc[0]
+        row.update(month=current.month, origin_month=past.month.iloc[-1],
+                   actual_kb=current.stock_kb, delta_kb=current.stock_kb-past.stock_kb.iloc[-1],
+                   forecast_flow_identity=max(0.0, past.stock_kb.iloc[-1] + flow.to_numpy() @ SIGNS))
+        rows.append(row)
+    return pd.DataFrame(rows)
 
 
-def load_jodi_us(path: Path = DEFAULT_JODI_FILE) -> pd.DataFrame:
-    """Load JODI U.S. crude data as a national benchmark in monthly kb."""
-    path = Path(path)
-    if not path.is_file():
-        raise FileNotFoundError(f"JODI source archive not found: {path}")
-    columns = [
-        "REF_AREA",
-        "TIME_PERIOD",
-        "ENERGY_PRODUCT",
-        "FLOW_BREAKDOWN",
-        "UNIT_MEASURE",
-        "OBS_VALUE",
-        "ASSESSMENT_CODE",
-    ]
-    raw = pd.read_parquet(path, columns=columns)
-    raw = raw.loc[
-        (raw["REF_AREA"] == "US")
-        & (raw["ENERGY_PRODUCT"] == "CRUDEOIL")
-        & raw["FLOW_BREAKDOWN"].isin(JODI_FLOW_MAP)
-        & (raw["UNIT_MEASURE"] == "KBBL")
-    ].copy()
-    if raw.empty:
-        raise ValueError("No U.S. crude observations were found in the JODI archive")
-    raw["month"] = pd.to_datetime(raw["TIME_PERIOD"]).dt.to_period("M").dt.to_timestamp()
-    raw["component"] = raw["FLOW_BREAKDOWN"].map(JODI_FLOW_MAP)
-    raw["OBS_VALUE"] = pd.to_numeric(raw["OBS_VALUE"], errors="coerce")
-
-    # Annual archive refreshes can leave identical revision rows. Prefer the
-    # lowest JODI assessment code, then collapse exact duplicates deterministically.
-    raw = raw.sort_values("ASSESSMENT_CODE").drop_duplicates(
-        ["month", "component", "OBS_VALUE"], keep="first"
-    )
-    conflicts = raw.groupby(["month", "component"])["OBS_VALUE"].nunique(dropna=True)
-    if (conflicts > 1).any():
-        raw = raw.sort_values("ASSESSMENT_CODE").drop_duplicates(
-            ["month", "component"], keep="first"
-        )
-    jodi = raw.pivot(index="month", columns="component", values="OBS_VALUE").reset_index()
-    for column in JODI_FLOW_MAP.values():
-        if column not in jodi:
-            jodi[column] = np.nan
-    jodi["jodi_fundamental_balance_kb"] = (
-        jodi["jodi_production_kb"]
-        - jodi["jodi_demand_kb"]
-        + jodi["jodi_imports_kb"]
-        - jodi["jodi_exports_kb"]
-    )
-    jodi["jodi_identity_stock_t1_kb"] = (
-        jodi["jodi_stock_kb"] + jodi["jodi_fundamental_balance_kb"]
-    )
-    return jodi.sort_values("month").reset_index(drop=True)
+def columns(name):
+    if name == 'legacy_constrained_level':
+        return ['stock_lag1'] + ['lag_' + c for c in FLOWS[:4]]
+    if name == 'constrained_level':
+        return ['stock_lag1'] + ['lag_' + c for c in FLOWS]
+    if name == 'ridge_change':
+        return BASE_FEATURES
+    return FEATURES
 
 
-def _fit_one_padd(frame: pd.DataFrame, cv_folds: int) -> tuple[pd.DataFrame, dict, dict]:
-    complete = frame.dropna(subset=FEATURE_COLUMNS + ["stock_t1_actual_kb"]).copy()
-    if len(complete) < 36:
-        raise ValueError(f"PADD {frame['padd'].iloc[0]} has fewer than 36 complete observations")
-
-    # Signed outflow features plus positive coefficients preserve the physical
-    # directions in Stock_t+1 = Stock_t + Production - Demand + Imports - Exports.
-    splitter = TimeSeriesSplit(n_splits=cv_folds)
-    cv_prediction = pd.Series(np.nan, index=frame.index, dtype=float)
-    cv_fold = pd.Series(pd.NA, index=frame.index, dtype="Int64")
-    for fold, (train_positions, test_positions) in enumerate(splitter.split(complete), start=1):
-        train = complete.iloc[train_positions]
-        test = complete.iloc[test_positions]
-        fold_model = LinearRegression(positive=True)
-        fold_model.fit(train[FEATURE_COLUMNS], train["stock_t1_actual_kb"])
-        cv_prediction.loc[test.index] = fold_model.predict(test[FEATURE_COLUMNS])
-        cv_fold.loc[test.index] = fold
-
-    # Refit on all history after scoring. Only this final model is used for the
-    # current one-step forecast and exported full-history fitted values.
-    model = LinearRegression(positive=True)
-    model.fit(complete[FEATURE_COLUMNS], complete["stock_t1_actual_kb"])
-    result = frame.copy()
-    valid_x = result[FEATURE_COLUMNS].notna().all(axis=1)
-    result.loc[valid_x, "regression_stock_t1_kb"] = model.predict(
-        result.loc[valid_x, FEATURE_COLUMNS]
-    )
-    result["regression_stock_change_kb"] = result["regression_stock_t1_kb"] - result["stock_t_kb"]
-    result["regression_error_kb"] = result["stock_t1_actual_kb"] - result["regression_stock_t1_kb"]
-    result["cv_regression_stock_t1_kb"] = cv_prediction
-    result["cv_regression_error_kb"] = result["stock_t1_actual_kb"] - cv_prediction
-    result["cv_fold"] = cv_fold
-    result["sample"] = "initial_train"
-    result.loc[result["cv_fold"].notna(), "sample"] = "cv_test"
-    result.loc[result["stock_t1_actual_kb"].isna(), "sample"] = "forecast"
-
-    scored = result.dropna(subset=["cv_regression_stock_t1_kb"])
-    metrics = {
-        "padd": int(frame["padd"].iloc[0]),
-        "padd_name": frame["padd_name"].iloc[0],
-        "cv_folds": cv_folds,
-        "fit_observations": len(complete),
-        "cv_observations": len(scored),
-        "cv_start": scored["month"].min(),
-        "cv_end": scored["month"].max(),
-        "cv_mae_kb": mean_absolute_error(
-            scored["stock_t1_actual_kb"], scored["cv_regression_stock_t1_kb"]
-        ),
-        "cv_rmse_kb": mean_squared_error(
-            scored["stock_t1_actual_kb"], scored["cv_regression_stock_t1_kb"]
-        ) ** 0.5,
-        "cv_r2": r2_score(scored["stock_t1_actual_kb"], scored["cv_regression_stock_t1_kb"]),
-        "identity_cv_mae_kb": mean_absolute_error(
-            scored["stock_t1_actual_kb"], scored["identity_stock_t1_kb"]
-        ),
-    }
-    coefficients = {"padd": metrics["padd"], "intercept_kb": model.intercept_}
-    coefficients.update(dict(zip(FEATURE_COLUMNS, model.coef_)))
-    return result, metrics, coefficients
+def estimator(name):
+    if name in ['constrained_level', 'legacy_constrained_level']:
+        return LinearRegression(positive=True)
+    if name in ['ridge_change', 'seasonal_ridge_change', 'rolling_ridge_change', 'damped_ridge_change']:
+        return make_pipeline(StandardScaler(), Ridge(alpha=100))
+    if name == 'polynomial_ridge_change':
+        return make_pipeline(StandardScaler(), PolynomialFeatures(2, include_bias=False),
+                             StandardScaler(), Ridge(alpha=1000))
+    if name == 'spline_ridge_change':
+        return make_pipeline(SplineTransformer(n_knots=4, degree=2, extrapolation='linear'),
+                             StandardScaler(), Ridge(alpha=100))
+    if name == 'random_forest_change':
+        return RandomForestRegressor(n_estimators=150, max_depth=4, min_samples_leaf=12,
+                                     max_features=0.8, n_jobs=1, random_state=42)
+    if name == 'xgboost_change':
+        return XGBRegressor(n_estimators=120, max_depth=2, learning_rate=0.03,
+            min_child_weight=12, reg_lambda=30, subsample=0.8, colsample_bytree=0.8,
+            n_jobs=1, random_state=42, objective='reg:squarederror')
+    if name == 'neural_network_change':
+        return TransformedTargetRegressor(regressor=make_pipeline(StandardScaler(),
+            MLPRegressor(hidden_layer_sizes=(16,), alpha=10, solver='lbfgs',
+                         max_iter=3000, random_state=42)), transformer=StandardScaler())
+    if name == 'ensemble_change':
+        return VotingRegressor([(n, estimator(n)) for n in
+            ['seasonal_ridge_change', 'random_forest_change', 'xgboost_change']])
+    raise ValueError(name)
 
 
-def fit_padd_models(eia: pd.DataFrame, cv_folds: int = 10) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
-    """Fit one constrained regression per PADD with expanding-window CV."""
-    if cv_folds < 2:
-        raise ValueError("cv_folds must be at least 2")
-    modeled, metrics, coefficients = [], [], []
-    for padd in sorted(PADD_NAMES):
-        fitted, score, coef = _fit_one_padd(eia.loc[eia["padd"] == padd], cv_folds)
-        modeled.append(fitted)
-        metrics.append(score)
-        coefficients.append(coef)
-    return (
-        pd.concat(modeled, ignore_index=True),
-        pd.DataFrame(metrics),
-        pd.DataFrame(coefficients),
-    )
+def fit(name, train):
+    if name in BASELINES:
+        return None, ''
+    model = estimator(name)
+    if name == 'rolling_ridge_change':
+        train = train.tail(60)
+    target = 'actual_kb' if name in ['constrained_level', 'legacy_constrained_level'] else 'delta_kb'
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter('always', ConvergenceWarning)
+        model.fit(train[columns(name)], train[target])
+    return model, '; '.join(str(w.message) for w in caught)
 
 
-def aggregate_us(padd: pd.DataFrame, jodi: pd.DataFrame) -> pd.DataFrame:
-    """Aggregate the five PADD balances and then join JODI national benchmarks."""
-    additive = [
-        "stock_t_kb",
-        "stock_t1_actual_kb",
-        "production_kb",
-        "demand_kb",
-        "imports_kb",
-        "exports_kb",
-        "reported_stock_change_kb",
-        "fundamental_balance_kb",
-        "identity_stock_t1_kb",
-        "identity_error_kb",
-        "regression_stock_t1_kb",
-        "regression_stock_change_kb",
-        "regression_error_kb",
-        "cv_regression_stock_t1_kb",
-        "cv_regression_error_kb",
-    ]
-    us = padd.groupby("month", as_index=False)[additive].sum(min_count=5)
-    us = us.rename(columns={column: f"us_{column}" for column in additive})
-    us["padd_count"] = padd.groupby("month")["padd"].nunique().to_numpy()
-    us = us.merge(jodi, on="month", how="left", validate="one_to_one")
-    us["eia_minus_jodi_stock_kb"] = us["us_stock_t_kb"] - us["jodi_stock_kb"]
-    for component in ["production", "demand", "imports", "exports"]:
-        us[f"eia_minus_jodi_{component}_kb"] = (
-            us[f"us_{component}_kb"] - us[f"jodi_{component}_kb"]
-        )
-    return us.sort_values("month").reset_index(drop=True)
+def predict(name, model, frame):
+    if name == 'persistence':
+        return frame.stock_lag1.to_numpy()
+    if name == 'seasonal_naive':
+        return frame.stock_lag12.to_numpy()
+    if name == 'seasonal_change':
+        return np.maximum(0, frame.stock_lag1.to_numpy() + frame.seasonal_change.to_numpy())
+    if name == 'forecast_flow_identity':
+        return frame.forecast_flow_identity.to_numpy()
+    prediction = model.predict(frame[columns(name)])
+    if name == 'damped_ridge_change':
+        prediction *= 0.5
+    if name not in ['constrained_level', 'legacy_constrained_level']:
+        prediction += frame.stock_lag1.to_numpy()
+    return np.maximum(prediction, 0)
 
 
-def latest_forecasts(padd: pd.DataFrame) -> pd.DataFrame:
-    """Return each PADD's newest next-month prediction and the summed U.S. result."""
-    latest = padd.sort_values("month").groupby("padd", as_index=False).tail(1).copy()
-    latest["forecast_month"] = latest["month"] + pd.offsets.MonthBegin(1)
-    columns = [
-        "padd",
-        "padd_name",
-        "month",
-        "forecast_month",
-        "stock_t_kb",
-        "fundamental_balance_kb",
-        "identity_stock_t1_kb",
-        "regression_stock_t1_kb",
-        "regression_stock_change_kb",
-    ]
-    forecasts = latest[columns]
-    national = {
-        "padd": 0,
-        "padd_name": "United States (sum of PADDs)",
-        "month": latest["month"].max(),
-        "forecast_month": latest["forecast_month"].max(),
-    }
-    for column in columns[4:]:
-        national[column] = latest[column].sum(min_count=5)
-    return pd.concat([forecasts, pd.DataFrame([national])], ignore_index=True)
+def score(actual, predicted):
+    return {'mae_kb': mean_absolute_error(actual, predicted),
+            'rmse_kb': mean_squared_error(actual, predicted)**0.5,
+            'r2': r2_score(actual, predicted), 'n': len(actual)}
 
 
-def _seasonal_trend_design(months: pd.Series | pd.DatetimeIndex, origin: pd.Timestamp) -> np.ndarray:
-    """Linear time trend and fixed monthly-season effects for flow forecasts."""
-    dates = pd.DatetimeIndex(pd.to_datetime(months))
-    trend = ((dates.year - origin.year) * 12 + dates.month - origin.month).to_numpy()
-    month_dummies = np.column_stack([(dates.month == month).astype(float) for month in range(2, 13)])
-    return np.column_stack([trend, month_dummies])
+def evaluate(samples, folds=10, holdout=24):
+    """Choose models only on development CV; score untouched final 24 months."""
+    predictions, fold_metrics, selections, fitted, warning_rows = [], [], [], {}, []
+    for padd, frame in samples.items():
+        development = frame.iloc[:-holdout]
+        if len(development) - folds*12 < 36:
+            raise ValueError('Need >=36 initial training months plus 10 annual folds and holdout')
+        splits = list(TimeSeriesSplit(n_splits=folds, test_size=12).split(development))
+        for name in MODELS:
+            for fold, (tr, te) in enumerate(splits, 1):
+                train, test = development.iloc[tr], development.iloc[te]
+                model, warning = fit(name, train)
+                pred = predict(name, model, test)
+                fold_metrics.append(dict(padd=padd, model=name, fold=fold,
+                    train_end=train.month.max(), test_start=test.month.min(), test_end=test.month.max(),
+                    train_mae_kb=mean_absolute_error(train.actual_kb, predict(name, model, train)),
+                    **score(test.actual_kb, pred)))
+                output = test[['month', 'origin_month', 'actual_kb']].copy()
+                output['predicted_kb'], output['padd'], output['model'] = pred, padd, name
+                output['split'], output['fold'] = 'cv', fold
+                predictions.append(output)
+                if warning:
+                    warning_rows.append(dict(padd=padd, model=name, stage=f'cv_{fold}', warning=warning))
+        current = pd.concat(predictions, ignore_index=True)
+        current = current[current.padd.eq(padd)]
+        losses = current.assign(error=lambda x: abs(x.actual_kb-x.predicted_kb)).groupby('model').error.mean()
+        winner = losses.idxmin()
+        selections.append(dict(padd=padd, selected_model=winner, cv_mae_kb=losses[winner]))
+        for name in MODELS:
+            model, warning = fit(name, development)
+            test = frame.iloc[-holdout:]
+            output = test[['month', 'origin_month', 'actual_kb']].copy()
+            output['predicted_kb'] = predict(name, model, test)
+            output['padd'], output['model'], output['split'], output['fold'] = padd, name, 'holdout', 0
+            predictions.append(output)
+            if warning:
+                warning_rows.append(dict(padd=padd, model=name, stage='holdout', warning=warning))
+        final, warning = fit(winner, frame)
+        fitted[padd] = {'name': winner, 'estimator': final}
+        if warning:
+            warning_rows.append(dict(padd=padd, model=winner, stage='final', warning=warning))
+        print(f'PADD {padd}: selected {winner}; CV MAE {losses[winner]:,.1f} kb', flush=True)
+    return (pd.concat(predictions, ignore_index=True), pd.DataFrame(fold_metrics),
+            pd.DataFrame(selections), fitted,
+            pd.DataFrame(warning_rows, columns=['padd','model','stage','warning']))
 
 
-def forecast_padd_snd_12m(
-    padd: pd.DataFrame,
-    coefficients: pd.DataFrame,
-    horizon: int = 12,
-    lookback_months: int = 120,
-) -> tuple[pd.DataFrame, pd.DataFrame]:
-    """Forecast PADD flows, balances, and stocks, then aggregate to the U.S.
-
-    Each flow uses a linear trend plus monthly fixed effects. Stock paths feed
-    those forecasts recursively through the final full-history PADD stock model.
-    """
-    if horizon < 1:
-        raise ValueError("horizon must be at least 1")
-    if lookback_months < 36:
-        raise ValueError("lookback_months must be at least 36")
-
-    flow_columns = ["production_kb", "demand_kb", "imports_kb", "exports_kb"]
-    forecasts = []
-    for padd_number in sorted(PADD_NAMES):
-        history = padd.loc[padd["padd"] == padd_number].sort_values("month")
-        latest_month = history["month"].max()
-        future_months = pd.date_range(
-            latest_month + pd.offsets.MonthBegin(1), periods=horizon, freq="MS"
-        )
-        future = pd.DataFrame({"month": future_months})
-        future["padd"] = padd_number
-        future["padd_name"] = PADD_NAMES[padd_number]
-
-        for column in flow_columns:
-            train = history[["month", column]].dropna().tail(lookback_months)
-            origin = train["month"].iloc[0]
-            flow_model = LinearRegression()
-            flow_model.fit(
-                _seasonal_trend_design(train["month"], origin), train[column]
-            )
-            future[f"forecast_{column}"] = np.maximum(
-                flow_model.predict(_seasonal_trend_design(future_months, origin)), 0.0
-            )
-
-        future["forecast_supply_kb"] = (
-            future["forecast_production_kb"] + future["forecast_imports_kb"]
-        )
-        future["forecast_refinery_demand_kb"] = future["forecast_demand_kb"]
-        future["forecast_total_demand_kb"] = (
-            future["forecast_demand_kb"] + future["forecast_exports_kb"]
-        )
-        future["forecast_balance_kb"] = (
-            future["forecast_supply_kb"] - future["forecast_total_demand_kb"]
-        )
-
-        coef = coefficients.loc[coefficients["padd"] == padd_number].iloc[0]
-        regression_stock = float(history["stock_t_kb"].iloc[-1])
-        identity_stock = regression_stock
-        regression_path, identity_path = [], []
-        for row in future.itertuples(index=False):
-            identity_stock = identity_stock + row.forecast_balance_kb
-            signed_features = np.array(
-                [
-                    regression_stock,
-                    row.forecast_production_kb,
-                    -row.forecast_demand_kb,
-                    row.forecast_imports_kb,
-                    -row.forecast_exports_kb,
-                ]
-            )
-            regression_stock = max(
-                float(coef["intercept_kb"] + np.dot(coef[FEATURE_COLUMNS], signed_features)),
-                0.0,
-            )
-            identity_path.append(identity_stock)
-            regression_path.append(regression_stock)
-        future["identity_stock_kb"] = identity_path
-        future["regression_stock_kb"] = regression_path
-        forecasts.append(future)
-
-    padd_forecast = pd.concat(forecasts, ignore_index=True)
-    additive = [
-        "forecast_production_kb",
-        "forecast_imports_kb",
-        "forecast_supply_kb",
-        "forecast_demand_kb",
-        "forecast_refinery_demand_kb",
-        "forecast_exports_kb",
-        "forecast_total_demand_kb",
-        "forecast_balance_kb",
-        "identity_stock_kb",
-        "regression_stock_kb",
-    ]
-    us_forecast = padd_forecast.groupby("month", as_index=False)[additive].sum(min_count=5)
-    us_forecast.insert(1, "padd_count", 5)
-    return padd_forecast, us_forecast
+def aggregate(frame, keys, additive):
+    """Reject partial U.S. totals instead of silently summing fewer than five PADDs."""
+    if frame.duplicated(keys + ['padd']).any():
+        raise ValueError('Duplicate PADD rows in aggregation')
+    if not frame.groupby(keys).padd.nunique().eq(5).all():
+        raise ValueError('U.S. aggregation requires all five PADDs')
+    return frame.groupby(keys, as_index=False)[additive].sum(min_count=5)
 
 
-def build_model(
-    eia_file: Path = DEFAULT_EIA_FILE,
-    jodi_file: Path = DEFAULT_JODI_FILE,
-    cv_folds: int = 10,
-) -> ModelResults:
-    eia = load_eia_padd(eia_file)
-    jodi = load_jodi_us(jodi_file)
-    padd, metrics, coefficients = fit_padd_models(eia, cv_folds=cv_folds)
-    us = aggregate_us(padd, jodi)
-    padd_forecast_12m, us_forecast_12m = forecast_padd_snd_12m(padd, coefficients)
-    return ModelResults(
-        padd=padd,
-        us=us,
-        jodi=jodi,
-        metrics=metrics,
-        coefficients=coefficients,
-        forecasts=latest_forecasts(padd),
-        padd_forecast_12m=padd_forecast_12m,
-        us_forecast_12m=us_forecast_12m,
-    )
+def forecast(history, fitted, horizon=12):
+    all_paths = []
+    for p, state in fitted.items():
+        past = history[history.padd.eq(p)].sort_values('month').copy()
+        origin = past.month.iloc[-1]
+        months = pd.date_range(origin + pd.offsets.MonthBegin(), periods=horizon, freq='MS')
+        flows = forecast_flows(past, months)
+        identity_stock = past.stock_kb.iloc[-1]
+        for h, month in enumerate(months, 1):
+            previous = past.stock_kb.iloc[-1]
+            flow = flows.loc[month]
+            balance = flow.to_numpy() @ SIGNS
+            features = feature_row(past, month)
+            features['forecast_flow_identity'] = max(0.0, previous + balance)
+            stock = float(predict(state['name'], state['estimator'], pd.DataFrame([features]))[0])
+            identity_stock += balance
+            row = dict(month=month, origin_month=origin, horizon=h, padd=p,
+                padd_name=PADD_NAMES[p], model=state['name'], stock_kb=stock,
+                previous_stock_kb=previous, stock_change_kb=stock-previous,
+                identity_stock_unclipped_kb=identity_stock, balance_kb=balance,
+                model_reconciliation_kb=stock-previous-balance,
+                supply_kb=flow.production_kb+flow.imports_kb+flow.net_receipts_kb+flow.adjustments_kb+flow.transfers_kb,
+                total_demand_kb=flow.demand_kb+flow.exports_kb+flow.direct_use_kb, **flow.to_dict())
+            all_paths.append(row)
+            past = pd.concat([past, pd.DataFrame([row])], ignore_index=True)
+    regional = pd.DataFrame(all_paths)
+    sums = FLOWS + ['stock_kb', 'previous_stock_kb','stock_change_kb', 'identity_stock_unclipped_kb',
+                   'balance_kb','model_reconciliation_kb','supply_kb','total_demand_kb']
+    return regional, aggregate(regional, ['month','origin_month','horizon'], sums)
 
 
-def write_outputs(results: ModelResults, output_dir: Path = DEFAULT_OUTPUT_DIR) -> None:
-    output_dir = Path(output_dir)
-    output_dir.mkdir(parents=True, exist_ok=True)
-    results.padd.to_csv(output_dir / "padd_monthly_model.csv", index=False)
-    results.us.to_csv(output_dir / "us_monthly_model.csv", index=False)
-    results.jodi.to_csv(output_dir / "jodi_us_benchmark.csv", index=False)
-    results.metrics.to_csv(output_dir / "padd_model_metrics.csv", index=False)
-    results.coefficients.to_csv(output_dir / "padd_model_coefficients.csv", index=False)
-    results.forecasts.to_csv(output_dir / "latest_forecast.csv", index=False)
-    results.padd_forecast_12m.to_csv(output_dir / "padd_forecast_12m.csv", index=False)
-    results.us_forecast_12m.to_csv(output_dir / "us_forecast_12m.csv", index=False)
-    metadata = {
-        "equation": "Stock_t+1 = Stock_t + Production_t - Demand_t + Import_t - Export_t",
-        "frequency": "monthly",
-        "flow_unit": "thousand barrels per month",
-        "stock_unit": "thousand barrels",
-        "eia_source": str(DEFAULT_EIA_FILE),
-        "jodi_source": str(DEFAULT_JODI_FILE),
-        "padds": PADD_NAMES,
-        "regression": "sklearn LinearRegression(positive=True) on signed balance features",
-        "validation": "10-fold expanding-window TimeSeriesSplit; final forecast model refit on all history",
-        "us_method": "sum of five independently modeled PADD balances",
-        "missing_value_policy": "blank EIA PADD export cells are flagged and treated as zero",
-        "latest_eia_month": str(results.padd["month"].max().date()),
-        "latest_jodi_month": str(results.jodi["month"].max().date()),
-    }
-    (output_dir / "model_metadata.json").write_text(json.dumps(metadata, indent=2))
+def metric_table(predictions, keys):
+    return pd.DataFrame([{**dict(zip(keys, k if isinstance(k, tuple) else (k,))),
+        **score(g.actual_kb, g.predicted_kb)} for k,g in predictions.groupby(keys)])
 
 
-def parse_args() -> argparse.Namespace:
+def build_model(data_dir=HERE/'data', output_dir=HERE/'model_output', folds=10):
+    output = Path(output_dir)
+    output.mkdir(parents=True, exist_ok=True)
+    panel = load_panel(data_dir)
+    histories = {p: panel[panel.padd.eq(p)].reset_index(drop=True) for p in PADD_NAMES}
+    samples = {p: supervised(history) for p,history in histories.items()}
+    predictions, fold_metrics, selection, fitted, fit_warnings = evaluate(samples, folds)
+    selected = predictions.merge(selection[['padd','selected_model']], on='padd')
+    selected = selected[selected.model.eq(selected.selected_model)].copy()
+    selected['model'] = 'selected_padd_models'
+    combined = pd.concat([predictions, selected[predictions.columns]], ignore_index=True)
+    us_predictions = aggregate(combined, ['month','origin_month','model','split','fold'], ['actual_kb','predicted_kb'])
+    # Choose the aggregation policy on development predictions only. A single
+    # common model family can outperform the mix of regional winners nationally.
+    policy_scores = metric_table(us_predictions[us_predictions.split.eq('cv')], ['model'])
+    policy = policy_scores.sort_values(['mae_kb','model']).iloc[0].model
+    regional_selection = selection.copy()
+    if policy != 'selected_padd_models':
+        for p, frame in samples.items():
+            model, warning = fit(policy, frame)
+            fitted[p] = {'name': policy, 'estimator': model}
+            if warning:
+                fit_warnings.loc[len(fit_warnings)] = [p, policy, 'national_policy_final', warning]
+        selection['selected_model'] = policy
+        selection['cv_mae_kb'] = [mean_absolute_error(g.actual_kb, g.predicted_kb)
+            for p in selection.padd
+            for g in [predictions.query("padd == @p and model == @policy and split == 'cv'")]]
+    chosen = us_predictions[us_predictions.model.eq(policy)].copy()
+    chosen['model'] = 'deployed_policy'
+    us_predictions = pd.concat([us_predictions, chosen], ignore_index=True)
+    deployed = combined.merge(selection[['padd','selected_model']], on='padd')
+    deployed = deployed[deployed.model.eq(deployed.selected_model)].copy()
+    deployed['model'] = 'deployed_policy'
+    combined = pd.concat([combined, deployed[predictions.columns]], ignore_index=True)
+    padd_metrics = metric_table(combined, ['padd','model','split'])
+    us_metrics = metric_table(us_predictions, ['model','split'])
+    one_step_regional, one_step_national = forecast(panel, fitted, horizon=1)
+    # Long-horizon model selection is a different task. Six disjoint development
+    # years end before the final holdout; all candidates use the actual recursive
+    # forecast function, without seeing any test-year observations.
+    development_end = samples[1].month.iloc[-25]
+    recursive_cv = []
+    for years_back in range(6, 0, -1):
+        cutoff = development_end - pd.DateOffset(years=years_back)
+        for name in MODELS:
+            states = {}
+            for p in PADD_NAMES:
+                model, warning = fit(name, samples[p][samples[p].month.le(cutoff)])
+                states[p] = {'name': name, 'estimator': model}
+                if warning:
+                    fit_warnings.loc[len(fit_warnings)] = [p, name, 'recursive_cv', warning]
+            path, _ = forecast(panel[panel.month.le(cutoff)], states)
+            path = path[['padd','month','origin_month','horizon','stock_kb']].rename(columns={'stock_kb':'predicted_kb'})
+            path = path.merge(panel[['padd','month','stock_kb']], on=['padd','month'], validate='one_to_one').rename(columns={'stock_kb':'actual_kb'})
+            path['model'] = name
+            recursive_cv.append(path)
+    recursive_cv = pd.concat(recursive_cv, ignore_index=True)
+    us_recursive_cv = aggregate(recursive_cv, ['month','origin_month','horizon','model'], ['actual_kb','predicted_kb'])
+    horizon_policy_scores = metric_table(us_recursive_cv, ['model']).sort_values(['mae_kb','model'])
+    horizon_policy = horizon_policy_scores.iloc[0].model
+    horizon_fitted = {}
+    for p in PADD_NAMES:
+        model, warning = fit(horizon_policy, samples[p])
+        horizon_fitted[p] = {'name': horizon_policy, 'estimator': model}
+        if warning:
+            fit_warnings.loc[len(fit_warnings)] = [p, horizon_policy, 'horizon_final', warning]
+    regional, national = forecast(panel, horizon_fitted)
+    print(f'National one-step policy: {policy}; 12-month policy: {horizon_policy}', flush=True)
+    # Thirteen rolling 12-month paths lying wholly inside the final holdout.
+    # They overlap and are correlated; do not interpret them as 13 independent years.
+    recursive = []
+    for offset in range(24, 11, -1):
+        cutoff = panel.month.max() - pd.DateOffset(months=offset)
+        for policy_name in ['deployed_policy', 'one_step_policy_recursive', 'persistence', 'legacy_constrained_level']:
+            states = {}
+            for p, state in fitted.items():
+                train = samples[p][samples[p].month.le(cutoff)]
+                name = (horizon_policy if policy_name == 'deployed_policy' else
+                        state['name'] if policy_name == 'one_step_policy_recursive' else policy_name)
+                model, warning = fit(name, train)
+                states[p] = {'name': name, 'estimator': model}
+                if warning:
+                    fit_warnings.loc[len(fit_warnings)] = [p, name, 'recursive_holdout', warning]
+            path, _ = forecast(panel[panel.month.le(cutoff)], states)
+            path['model'] = policy_name
+            path = path.merge(panel[['padd','month','stock_kb']], on=['padd','month'], suffixes=('_forecast','_actual'), validate='one_to_one')
+            path = path.rename(columns={'stock_kb_forecast':'predicted_kb','stock_kb_actual':'actual_kb'})
+            recursive.append(path)
+    recursive = pd.concat(recursive, ignore_index=True)
+    us_recursive = aggregate(recursive, ['month','origin_month','horizon','model'], ['actual_kb','predicted_kb'])
+    us_history = aggregate(panel, ['month'], FLOWS+['stock_kb','commercial_stock_kb','spr_stock_kb',
+        'balance_kb','accounting_residual_kb','five_term_balance_kb','five_term_residual_kb'])
+    jodi_raw = pd.read_csv(Path(data_dir)/'jodi_us_raw.csv')
+    jodi_raw['month'] = pd.to_datetime(jodi_raw.time_period).dt.to_period('M').dt.to_timestamp()
+    if (jodi_raw.groupby(['month','flow_breakdown']).obs_value.nunique() > 1).any():
+        raise ValueError('Conflicting JODI revisions; resolve before benchmarking')
+    jodi = jodi_raw.drop_duplicates(['month','flow_breakdown']).pivot(index='month',columns='flow_breakdown',values='obs_value').add_prefix('jodi_').reset_index()
+    us_history = us_history.merge(jodi, on='month', how='left', validate='one_to_one')
+    latest_us = one_step_national.assign(padd=0, padd_name='United States (sum of PADDs)',
+                                                       model='deployed_policy')
+    latest = pd.concat([one_step_regional, latest_us], ignore_index=True)
+    tables = {'padd_monthly_model':panel,'us_monthly_model':us_history,'jodi_us_benchmark':jodi,
+        'padd_predictions':combined,'us_predictions':us_predictions,'padd_model_metrics':padd_metrics,
+        'us_model_metrics':us_metrics,'fold_metrics':fold_metrics,'selected_models':selection,
+        'regional_cv_winners':regional_selection, 'national_policy_cv_metrics':policy_scores,
+        'recursive_cv_predictions':recursive_cv, 'us_recursive_cv_predictions':us_recursive_cv,
+        'horizon_policy_cv_metrics':horizon_policy_scores,
+        'padd_forecast_12m':regional,'us_forecast_12m':national,'latest_forecast':latest,
+        'recursive_holdout_predictions':recursive,'us_recursive_holdout_predictions':us_recursive,
+        'recursive_holdout_metrics':metric_table(recursive,['padd','model']),
+        'us_recursive_horizon_metrics':metric_table(us_recursive,['horizon','model']), 'fit_warnings':fit_warnings}
+    for name, frame in tables.items():
+        frame.to_csv(output/f'{name}.csv', index=False)
+    joblib.dump(fitted, output/'fitted_models.joblib')
+    joblib.dump(horizon_fitted, output/'fitted_horizon_models.joblib')
+    coefficients = []
+    for p, frame in samples.items():
+        model, _ = fit('constrained_level', frame)
+        coefficients.append({'padd':p,'intercept_kb':model.intercept_,**dict(zip(columns('constrained_level'),model.coef_))})
+    pd.DataFrame(coefficients).to_csv(output/'constrained_model_coefficients.csv',index=False)
+    pd.DataFrame(coefficients).to_csv(output/'padd_model_coefficients.csv',index=False)
+    metadata = {'product':'Total crude oil including SPR; commercial and SPR stocks shown separately',
+        'stock_units':'thousand barrels at month end', 'flow_units':'thousand barrels per calendar month',
+        'equation':'S[t] = S[t-1] + field production[t] + imports[t] + net receipts[t] + adjustments[t] + transfers to crude[t] - refinery input[t] - exports[t] - direct use[t] + residual[t]',
+        'data_start':str(panel.month.min().date()),'data_end':str(panel.month.max().date()),
+        'cv':f'{folds} expanding folds, 12 test months each; final 24 months excluded from selection',
+        'holdout_start':str(samples[1].month.iloc[-24].date()),
+        'forecast_timing':'One month after latest observed EIA month; conditional on prior monthly data being available. Current revised history, not a real-time release-vintage backtest.',
+        'selection':'PADD CV winners plus common-family policies; lowest national development CV MAE chooses deployment; fixed settings and no holdout tuning',
+        'deployed_policy':policy,
+        'horizon_policy':horizon_policy,
+        'horizon_selection':'Lowest national MAE across six disjoint 12-month development paths, July 2018–June 2024 in saved run; all 16 candidates compared',
+        'flow_forecast':'Last 60 months, daily rates, linear trend and month fixed effects',
+        'forecast_stock_floor':0, 'uncertainty':'Point forecasts only; no calibrated prediction intervals',
+        'recursive_validation':'13 overlapping 12-month paths entirely in final holdout; refit at each origin; correlated errors',
+        'versions':{'python':platform.python_version(),'numpy':np.__version__,'pandas':pd.__version__,
+                    'sklearn':sklearn.__version__, 'xgboost':xgboost.__version__},
+        'sources':['https://www.eia.gov/dnav/pet/pet_sum_snd_d_r10_mbbl_m_cur.htm',
+                   'https://www.eia.gov/dnav/pet/TblDefs/pet_sum_snd_tbldef2.asp',
+                   'https://www.jodidata.org/oil/']}
+    (output/'model_metadata.json').write_text(json.dumps(metadata,indent=2))
+    settings = {name: {'features': columns(name), 'estimator': repr(estimator(name))}
+                for name in LEARNED}
+    (output/'candidate_models.json').write_text(json.dumps(settings, indent=2))
+    print(us_metrics[us_metrics.split.eq('holdout')].sort_values('mae_kb').to_string(index=False))
+    return tables
+
+
+if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--eia-file", type=Path, default=DEFAULT_EIA_FILE)
-    parser.add_argument("--jodi-file", type=Path, default=DEFAULT_JODI_FILE)
-    parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT_DIR)
-    parser.add_argument("--cv-folds", type=int, default=10)
-    return parser.parse_args()
-
-
-def main() -> None:
-    args = parse_args()
-    results = build_model(args.eia_file, args.jodi_file, args.cv_folds)
-    write_outputs(results, args.output_dir)
-    print(results.forecasts.to_string(index=False))
-    print(f"\nOutputs written to {args.output_dir.resolve()}")
-
-
-if __name__ == "__main__":
-    main()
+    parser.add_argument('--refresh-data', action='store_true')
+    parser.add_argument('--data-dir', type=Path, default=HERE/'data')
+    parser.add_argument('--output-dir', type=Path, default=HERE/'model_output')
+    parser.add_argument('--cv-folds', type=int, default=10)
+    args = parser.parse_args()
+    if args.refresh_data:
+        refresh_data(args.data_dir)
+    build_model(args.data_dir,args.output_dir,args.cv_folds)

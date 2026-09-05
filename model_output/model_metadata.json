@@ -1,21 +1,31 @@
 {
-  "equation": "Stock_t+1 = Stock_t + Production_t - Demand_t + Import_t - Export_t",
-  "frequency": "monthly",
-  "flow_unit": "thousand barrels per month",
-  "stock_unit": "thousand barrels",
-  "eia_source": "/home/calvin/commodities/data/eia/petroleum/data/EIA_XLS_Monthly.parquet",
-  "jodi_source": "/home/calvin/commodities/data/jodi/JODI.parquet",
-  "padds": {
-    "1": "East Coast",
-    "2": "Midwest",
-    "3": "Gulf Coast",
-    "4": "Rocky Mountain",
-    "5": "West Coast"
+  "product": "Total crude oil including SPR; commercial and SPR stocks shown separately",
+  "stock_units": "thousand barrels at month end",
+  "flow_units": "thousand barrels per calendar month",
+  "equation": "S[t] = S[t-1] + field production[t] + imports[t] + net receipts[t] + adjustments[t] + transfers to crude[t] - refinery input[t] - exports[t] - direct use[t] + residual[t]",
+  "data_start": "2007-01-01",
+  "data_end": "2026-06-01",
+  "cv": "10 expanding folds, 12 test months each; final 24 months excluded from selection",
+  "holdout_start": "2024-07-01",
+  "forecast_timing": "One month after latest observed EIA month; conditional on prior monthly data being available. Current revised history, not a real-time release-vintage backtest.",
+  "selection": "PADD CV winners plus common-family policies; lowest national development CV MAE chooses deployment; fixed settings and no holdout tuning",
+  "deployed_policy": "seasonal_change",
+  "horizon_policy": "seasonal_change",
+  "horizon_selection": "Lowest national MAE across six disjoint 12-month development paths, July 2018\u2013June 2024 in saved run; all 16 candidates compared",
+  "flow_forecast": "Last 60 months, daily rates, linear trend and month fixed effects",
+  "forecast_stock_floor": 0,
+  "uncertainty": "Point forecasts only; no calibrated prediction intervals",
+  "recursive_validation": "13 overlapping 12-month paths entirely in final holdout; refit at each origin; correlated errors",
+  "versions": {
+    "python": "3.13.9",
+    "numpy": "2.3.5",
+    "pandas": "2.3.3",
+    "sklearn": "1.7.2",
+    "xgboost": "3.4.1"
   },
-  "regression": "sklearn LinearRegression(positive=True) on signed balance features",
-  "validation": "10-fold expanding-window TimeSeriesSplit; final forecast model refit on all history",
-  "us_method": "sum of five independently modeled PADD balances",
-  "missing_value_policy": "blank EIA PADD export cells are flagged and treated as zero",
-  "latest_eia_month": "2026-05-01",
-  "latest_jodi_month": "2026-01-01"
+  "sources": [
+    "https://www.eia.gov/dnav/pet/pet_sum_snd_d_r10_mbbl_m_cur.htm",
+    "https://www.eia.gov/dnav/pet/TblDefs/pet_sum_snd_tbldef2.asp",
+    "https://www.jodidata.org/oil/"
+  ]
 }

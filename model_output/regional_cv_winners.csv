@@ -1,0 +1,6 @@
+padd,selected_model,cv_mae_kb
+1,neural_network_change,1014.3096677667211
+2,neural_network_change,4522.183073624579
+3,seasonal_change,8985.653333333328
+4,xgboost_change,816.17021484375
+5,spline_ridge_change,1768.9290882699177

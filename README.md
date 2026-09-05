@@ -1,88 +1,121 @@
-# U.S. PADD crude supply-and-demand model
+# U.S. crude supply-and-demand model — reviewed September 2026
 
-This directory contains a monthly crude-oil stock model built directly from
-the source archives in `data/eia` and `data/jodi`. It does not import the
-existing `oil/snd` model or its generated data.
+Start with **[us_snd_model_results.ipynb](us_snd_model_results.ipynb)**, an executed
+72-cell walkthrough modeled on the gasoline notebook. It explains the original
+implementation's issues, sources, all 16 candidates, chronological model selection,
+a separate final evaluation period, JODI context, recursive tests, and forecasts.
+All implementation code and review findings are included in this single notebook;
+the companion review document is optional. No project Python modules are imported
+when the notebook runs. Share the notebook with its `data/` folder for offline
+reproduction, or read its saved tables and figures without running anything.
 
-`us_snd_model_results.ipynb` is an executed walkthrough of data preparation,
-model fitting, holdout diagnostics, PADD aggregation, JODI comparison, and the
-12-month supply, demand, balance, and stock forecasts.
+## What changed
 
-`model_comparison_10fold.ipynb` compares constrained linear regression, random
-forests, XGBoost, and a small neural network with identical 10-fold expanding-
-window validation and explicit overfitting diagnostics.
+The model now reconciles flows with the stock change in the **same month** and
+includes net inter-PADD receipts, supply adjustments, transfers to crude supply,
+and direct crude use. Forecasts use **only prior-month observations**. Historical
+accounting and predictive performance are evaluated separately.
 
-`regression_variants_10fold.ipynb` compares level, change, seasonal, polynomial,
-and spline regression formulations under the same time-series validation, with
-regularization and train/test-gap checks to control overfitting.
+The stock target remains **total crude oil including SPR**, as in the original
+model. Commercial and SPR stocks are explicitly separated in the historical data
+and notebook. The model does not forecast prices or separately predict SPR policy.
 
-## Method
+Fifty-five EIA source spreadsheets were downloaded through **June 2026**. The
+analysis uses January 2007 onward. Original XLS files, normalized data, retrieval
+timestamps, source titles/URLs, and SHA-256 hashes are preserved under `data/`.
+JODI crude history is snapshotted from the shared database, ending January 2026.
 
-For each of PADDs 1 through 5, the accounting baseline is:
+## Results and limitations
+
+One-month model selection uses 10 expanding annual test folds (July 2014–June 2024),
+then evaluates on July 2024–June 2026. All 16 candidates are compared on the same
+dates. National selection compares both a common model family and the mix of
+regional CV winners after summing the five PADD predictions.
+
+The selected national rule is **seasonal stock change**: latest stock plus the
+mean same-month change from the preceding 60 months. Final-period national MAE is
+**11,662 kb**, versus **13,182 kb** for persistence (**11.5% lower**) and **11,670 kb**
+for the original five-feature constrained regression (**0.07% lower**). The simpler
+rule's recent improvement over the original regression is therefore very small.
+
+Twelve-month selection is evaluated separately using six disjoint development
+years. It also selects seasonal stock change. However, across 13 overlapping
+12-month final-period forecast origins, its MAE is **39,854 kb**, versus **14,931 kb**
+for persistence. **The long-horizon model has not demonstrated improvement over
+unchanged stocks.** The notebook shows this failure and the persistence baseline
+prominently; the saved 12-month path is a conditional scenario, not a validated
+reliable outlook. Historical SPR drawdowns are a major extrapolation risk.
+
+This is a retrospective, latest-vintage evaluation. The final period is excluded
+from this experiment's selection, but earlier crude notebooks used some of these
+dates. EIA publication lags/revisions are not reconstructed, and no calibrated
+prediction intervals are provided.
+
+## Accounting
+
+Stocks are month-end thousand barrels; flows are thousand barrels per calendar month:
 
 ```text
-Stock_t+1 = Stock_t + Production_t - Demand_t + Imports_t - Exports_t
+Stock[t] - Stock[t-1]
+  = production[t] + imports[t] + net receipts[t] + adjustments[t]
+  + transfers to crude supply[t] - refinery input[t] - exports[t]
+  - direct crude use[t] + accounting residual[t]
 ```
 
-All flows are monthly thousand barrels (`kb`); stocks are ending `kb`.
-EIA refiner crude input is used as crude demand. EIA source keys are generated
-for each PADD from `MCR{component}{PADD}1`: `FPP` production, `RIP` refinery
-input, `IMP` imports, `EXP` exports, `STP` stocks, and `SCP` reported stock
-change. Blank PADD export cells are retained in an `exports_imputed_zero` flag
-and treated as zero when forming the additive balance.
+Most complete-balance residuals are within 1 kb. January 2026 has source/reporting
+differences of 60 kb in PADD 2 and 6 kb in PADD 4; they are retained. They also occur
+in reported stock change versus changes in month-end levels.
 
-A separate constrained linear regression is fitted for each PADD. It uses
-`stock_t`, production, negative demand, imports, and negative exports as
-features. Non-negative fitted coefficients retain the physical signs of the
-identity while letting the historical data estimate scale and the intercept.
-The final U.S. SnD is formed only after modeling by summing the five PADDs.
+Sparse unreported exports/receipts and transfer-series gaps are explicitly assumed
+zero and flagged. The transfer series start in January 2022; earlier values represent
+zero in this published-category reconstruction. Withheld/unavailable markers are not
+filled. Every national aggregation requires five PADDs on the same month.
 
-Validation uses 10-fold expanding-window time-series cross-validation. Every
-fold trains only on observations earlier than its test observations, preventing
-future leakage. The exported metrics pool the ten out-of-fold predictions and
-compare them with the raw accounting identity over the same months. After
-validation, each PADD regression is refitted on all history for forecasting.
-
-The 12-month forward flow paths use linear regressions with a time trend and
-monthly fixed effects, fitted separately to each PADD's last 120 months of
-production, refinery demand, imports, and exports. Supply is production plus
-imports; total demand/disposition is refinery input plus exports. Forecast
-flows feed the fitted PADD stock models recursively, and the five paths are
-then summed to form the U.S. outlook.
-
-## EIA and JODI roles
-
-- EIA provides the PADD-level monthly observations.
-- JODI provides national U.S. crude production, refinery input, trade, stocks,
-  stock change, and statistical difference. JODI has no PADD dimension, so it
-  is joined to the aggregated EIA result as an explicit national benchmark.
-  It is not allocated to PADDs or treated as five regional observations.
-
-PADD stock changes will not equal the five-term identity exactly because EIA
-PADD balances also reflect inter-PADD movements, transfers, and statistical
-adjustments. Those omitted flows cancel only imperfectly at the U.S. boundary;
-the identity error and JODI statistical difference remain visible in output.
-
-## Run
-
-From this directory:
+## Run and files
 
 ```bash
-python us_snd_model.py
-pytest -q
+cd /home/calvin/commodities/oil/us_snd_crude
+python -m pip install -r requirements.txt
+python us_snd_model.py                  # offline snapshots
+python us_snd_model.py --refresh-data   # refresh EIA; snapshot JODI from DuckDB
+python -m pytest -q
 ```
 
-Optional arguments are `--eia-file`, `--jodi-file`, `--output-dir`, and
-`--cv-folds`.
+Run All in the notebook executes the data preparation, model definitions, a worked
+validation example, and seven visible experiment stages, then regenerates all
+comparisons, forecasts, charts, and tables.
+`create_notebook.py` regenerates notebook source and clears saved execution outputs;
+it is not needed for ordinary use. The shared database is read-only.
 
-Generated files in `model_output/`:
+`model_output/` contains:
 
-- `padd_monthly_model.csv`: all PADD inputs, identity, fitted values, and errors
-- `us_monthly_model.csv`: sum of the five PADDs plus JODI comparisons
-- `jodi_us_benchmark.csv`: normalized JODI national crude history
-- `padd_model_metrics.csv`: 10-fold time-series cross-validation metrics
-- `padd_model_coefficients.csv`: intercepts and learned coefficients
-- `latest_forecast.csv`: next-month PADD forecasts and their U.S. sum
-- `padd_forecast_12m.csv`: 12-month PADD supply, demand, balance, and stocks
-- `us_forecast_12m.csv`: 12-month U.S. aggregate of the five PADD forecasts
-- `model_metadata.json`: sources, units, equation, and model configuration
+- PADD/U.S. historical balances, commercial/SPR context, and JODI comparisons.
+- All one-month CV/evaluation predictions, annual train/test diagnostics, regional
+  CV winners, national policy scores, and selected-model specifications.
+- Recursive development and final-period predictions and horizon metrics.
+- `latest_forecast.csv`: five PADDs plus U.S., using the one-month policy.
+- `padd_forecast_12m.csv` and `us_forecast_12m.csv`: long-horizon policy, forecast
+  flows, raw accounting paths, and explicit `model_reconciliation_kb` differences.
+- `fitted_models.joblib` and `fitted_horizon_models.joblib`: separate one-month and
+  long-horizon selections. Baselines have a name and no fitted estimator object.
+- Coefficients for the complete constrained comparison model, candidate settings,
+  fitting warnings, and run metadata. Coefficients are not the deployed seasonal rule.
+
+One-month and long-horizon policies are selected separately and may differ on a
+future rerun. Flow forecasts use daily-rate seasonality/trend over the trailing
+60 months. Statistical stock changes need not equal their flow balance; the
+reconciliation term exposes that difference rather than treating it as an observed
+EIA adjustment. The raw accounting stock path remains unclipped.
+
+## Original work
+
+`legacy_results_20260905/` is a frozen copy of the pre-review code, notebooks,
+README, tests, and output folders. It is not the current analysis.
+`legacy_crude_model.py` retains the original implementation at the working root
+for reproducibility. The two older comparison notebooks now import that module
+and display a legacy notice. The current main notebook replaces the earlier
+walkthrough, whose exact pre-review copy is in the archive.
+
+The model-output filenames used by the database builder are retained, but their
+columns now use explicit target-month fields such as `stock_kb` and `balance_kb`.
+No shared-database rebuild was performed.

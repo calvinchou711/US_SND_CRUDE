@@ -1,0 +1,21 @@
+{
+  "equation": "Stock_t+1 = Stock_t + Production_t - Demand_t + Import_t - Export_t",
+  "frequency": "monthly",
+  "flow_unit": "thousand barrels per month",
+  "stock_unit": "thousand barrels",
+  "eia_source": "/home/calvin/commodities/data/eia/petroleum/data/EIA_XLS_Monthly.parquet",
+  "jodi_source": "/home/calvin/commodities/data/jodi/JODI.parquet",
+  "padds": {
+    "1": "East Coast",
+    "2": "Midwest",
+    "3": "Gulf Coast",
+    "4": "Rocky Mountain",
+    "5": "West Coast"
+  },
+  "regression": "sklearn LinearRegression(positive=True) on signed balance features",
+  "validation": "10-fold expanding-window TimeSeriesSplit; final forecast model refit on all history",
+  "us_method": "sum of five independently modeled PADD balances",
+  "missing_value_policy": "blank EIA PADD export cells are flagged and treated as zero",
+  "latest_eia_month": "2026-05-01",
+  "latest_jodi_month": "2026-01-01"
+}
