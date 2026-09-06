@@ -8,7 +8,15 @@
   "cv": "10 expanding folds, 12 test months each; final 24 months excluded from selection",
   "holdout_start": "2024-07-01",
   "forecast_timing": "One month after latest observed EIA month; conditional on prior monthly data being available. Current revised history, not a real-time release-vintage backtest.",
-  "selection": "PADD CV winners plus common-family policies; lowest national development CV MAE chooses deployment; fixed settings and no holdout tuning",
+  "selection": "GridSearchCV per PADD/model on development data; PADD winners plus common-family policies; lowest national development MAE chooses deployment; no holdout tuning",
+  "hyperparameter_search": {
+    "method": "GridSearchCV",
+    "folds": 10,
+    "scoring": "neg_mean_absolute_error",
+    "splitter": "TimeSeriesSplit; 12-month development test blocks; default block size inside recursive origins",
+    "evaluation": "Development scores reuse tuning folds and are selection scores, not nested CV estimates. Final 24 months excluded from all searches.",
+    "recursive": "Each development origin retunes on its past history. Holdout and final refits freeze parameters selected before holdout."
+  },
   "deployed_policy": "seasonal_change",
   "horizon_policy": "seasonal_change",
   "horizon_selection": "Lowest national MAE across six disjoint 12-month development paths, July 2018\u2013June 2024 in saved run; all 16 candidates compared",

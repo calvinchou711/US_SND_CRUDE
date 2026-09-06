@@ -1,5 +1,12 @@
 # Crude-model review
 
+The findings and numerical results below describe the **pre-grid-search review**.
+The September 6 update adds ten-fold chronological GridSearchCV to the current
+model and notebook. See [README.md](README.md#parameter-grids) for the ranges and
+protocol, and the current notebook and `model_output/` for tuned results. The
+fixed-setting outputs referenced below are preserved in
+`model_output_before_grid_search_20260906/`.
+
 Reviewed the original Python model, all three notebooks, generated outputs, source
 series, aggregation logic, and tests. Preserved the pre-review files under
 `legacy_results_20260905/` before changing the current implementation.

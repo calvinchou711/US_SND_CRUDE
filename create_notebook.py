@@ -1,20 +1,21 @@
-"""Build the reviewed crude-model walkthrough. Run All to execute the experiment."""
+"""Build the current crude-model walkthrough. Run All to execute the experiment."""
 from pathlib import Path
+import argparse
 import nbformat as nbf
 HERE=Path(__file__).resolve().parent
 cells=[]
 def md(s):cells.append(nbf.v4.new_markdown_cell(s.strip()))
 def code(s):cells.append(nbf.v4.new_code_cell(s.strip()))
 md('''# U.S. crude oil supply, demand, and stocks
-## Model review, chronological comparison, and forecast results
+## Chronological model selection and forecast results
 
-**Question:** Which monthly PADD stock model improves on the original constrained regression and on simple baselines—and does that improvement survive a separate evaluation period?
+**Question:** Which monthly PADD stock model performs best in chronological development testing, and does that performance survive a separate evaluation period?
 
-This executed walkthrough reviews the earlier crude implementation and compares **16 approaches**. Five PADD predictions are summed to form the U.S. result. Model selection uses **10 expanding annual test folds**, followed by a separate **24-month evaluation period**. Twelve-month model selection uses **six disjoint development years**, and long-horizon evaluation uses **13 overlapping forecast origins**.
+This executed walkthrough compares **15 approaches**. Five PADD predictions are summed to form the U.S. result. Model selection uses **10 expanding annual test folds**, followed by a separate **24-month evaluation period**. Twelve-month model selection uses **six disjoint development years**, and long-horizon evaluation uses **13 overlapping forecast origins**.
 
-**Target:** Total crude oil stocks **including the Strategic Petroleum Reserve (SPR)**, preserving the earlier model's target. Commercial stocks and the SPR are shown separately. This is an inventory model, not a crude-price model.
+**Target:** Total crude oil stocks **including the Strategic Petroleum Reserve (SPR)**. Commercial stocks and the SPR are shown separately. This is an inventory model, not a crude-price model.
 
-Read in order: review findings → data and balance → forecast timing → model candidates → development selection → final evaluation → recursive forecasts → conclusions and reproducibility.''')
+Read in order: model scope → data and balance → forecast timing → model candidates → development selection → final evaluation → recursive forecasts → conclusions and reproducibility.''')
 code('''from pathlib import Path
 import sys,json
 import numpy as np
@@ -32,25 +33,14 @@ OUTPUT=HERE/'model_output'
 plt.style.use('seaborn-v0_8-whitegrid')
 pd.set_option('display.max_columns',20)
 pd.set_option('display.float_format',lambda x:f'{x:,.2f}')''')
-md('''## 1. What the review changed
+md('''## 1. Model scope and design
 
-| Finding in the original work | Change in this version | Why it matters |
-|---|---|---|
-| Current-month flows were labeled as next month's stock identity | Reconcile flows in t with the stock change from t−1 to t | Separates correct accounting from lag-based prediction |
-| Regional movements, supply adjustments, and transfers were omitted | Download and retain the complete published crude balance | Large apparent regional imbalances are explained |
-| The stock target included SPR without emphasizing it | Show total, commercial, and SPR stocks separately | Policy-driven reserve changes can dominate fitted trends |
-| All-history CV was the principal assessment | Reserve final 24 months from this experiment's selection | Distinguishes choosing a model from evaluating it |
-| One regression was used for the outlook | Compare seasonal baselines, regularization, nonlinear models, recent history, shrinkage, and an ensemble | Improvements must beat simple alternatives |
-| Regional selection need not minimize national error | Compare common-family and regional-winner policies on U.S. development MAE | Scores the actual national objective after aggregation |
-| One-month validation was used to support 12-month paths | Independently test and select with recursive development forecasts | Evaluates the procedure actually used for the outlook |
-| Fitting warnings were suppressed in an earlier notebook | Export all fitting warnings | Makes numerical failures visible |
+The model reconciles monthly flows with the stock change from t−1 to t, retains the complete published regional crude balance, and separates total, commercial, and SPR stocks. Forecast features use information available before each target month.
 
-Original files and results are preserved under `legacy_results_20260905/`. The two older comparison notebooks are marked legacy and import `legacy_crude_model.py`. The original five-feature regression is also **refitted and rescored on exactly the same data and dates** here as `legacy_constrained_level`.
-
-The old regression's lagged-flow inputs were usable predictors; the key timing error was calling its current-flow arithmetic an exact next-month accounting identity. The review does not label all earlier regression results as target leakage.''')
+Candidate families include seasonal baselines, constrained regression, regularized regression, nonlinear models, recent-history fitting, shrinkage, and an ensemble. Regional predictions are summed before national errors are scored. One-month and recursive 12-month policies are selected independently, and all fitting warnings are exported.''')
 md('''## 2. Sources, units, and stock scope
 
-The fresh download contains **55 EIA XLS files**, eleven series per PADD. The analysis uses January 2007 onward. Source titles, URLs, timestamps, and SHA-256 hashes are in `data/source_manifest.json`, with original files in `data/raw/`.
+The data snapshot contains **55 EIA XLS files**, eleven series per PADD. The analysis uses January 2007 onward. Source titles, URLs, timestamps, and SHA-256 hashes are in `data/source_manifest.json`, with raw files in `data/raw/`.
 
 Stocks are **thousand barrels at month end**. Flows are **thousand barrels per calendar month**. Divide kb by 1,000 to obtain the million-barrel units shown in charts.
 
@@ -65,7 +55,7 @@ flags=[c for c in panel if c.endswith('_assumed_zero')]
 display(panel.groupby('padd')[flags].sum())''')
 md('''No-data-reported/absent cells in exports and net receipts are explicitly assumed zero and flagged. The transfer series begin in January 2022; earlier transfer rows are structural zeros in the published-category reconstruction. These are reporting conventions, not claims that the underlying physical processes were absent. Unavailable/withheld text markers remain missing; unresolved core data fail validation. The loader requires a common complete endpoint and monthly calendar for all five PADDs.
 
-The review also corrected the shared downloader's Excel parsing: literal `NA` markers must remain distinct from blank cells. No explicit unavailable markers occur in the current analysis history, so this parser correction does not alter the saved gasoline results.''')
+Literal `NA` markers remain distinct from blank cells. No explicit unavailable markers occur in the current analysis history.''')
 code('''national_history=panel.groupby('month')[['stock_kb','commercial_stock_kb','spr_stock_kb']].sum()
 fig,axes=plt.subplots(1,2,figsize=(14,4))
 (national_history/1000).rename(columns={'stock_kb':'Total crude (target)','commercial_stock_kb':'Commercial','spr_stock_kb':'SPR'}).plot(ax=axes[0])
@@ -88,9 +78,9 @@ S_t-S_{t-1}=P_t+I_t+N_t+A_t+T_t-R_t-X_t-U_t+\epsilon_t
 | R / X / U | Refinery input / exports / direct crude use |
 | ε | Remaining accounting/reporting difference |
 
-The original five-term balance omitted N, A, T, and U. The revised residual is much smaller. A small historical residual validates alignment and coverage, **not forecast skill**: published balancing terms are not all independently measured information.''')
+The complete balance includes N, A, T, and U. A small historical residual validates alignment and coverage, **not forecast skill**: published balancing terms are not all independently measured information.''')
 code('''audit=panel.groupby('padd').agg(
-    old_balance_mae_kb=('five_term_residual_kb',lambda s:s.abs().mean()),
+    incomplete_balance_mae_kb=('five_term_residual_kb',lambda s:s.abs().mean()),
     complete_balance_mae_kb=('accounting_residual_kb',lambda s:s.abs().mean()),
     max_complete_residual_kb=('accounting_residual_kb',lambda s:s.abs().max()))
 display(audit)
@@ -110,12 +100,12 @@ Each row predicts ending stock in month **t**, using stock and flow observations
 
 The flow-identity baseline forecasts target-month flows from the previous 60 months of daily rates, using a linear trend and month fixed effects. Multiplication by the target month's day count handles February and 30/31-day months. Main production, refinery demand, imports, and exports receive a zero floor; net receipts, adjustments, and transfers retain their signs.
 
-This is a **conditional latest-vintage historical evaluation**. EIA releases monthly data with a delay and revises it. We have not reconstructed exactly what was available on each historical release date. Earlier crude notebooks also examined some of these dates, so the final 24 months are held out of **this experiment's selection**, not a never-before-seen prospective dataset. The long-horizon protocol was added during this review after observing that one-step selection was inadequate; its selection uses development data only, but the review as a whole is retrospective.''')
+This is a **conditional latest-vintage historical evaluation**. EIA releases monthly data with a delay and revises it. Historical release vintages have not been reconstructed. The final 24 months are excluded from model and parameter selection. Long-horizon selection uses development data only.''')
 code('''example=supervised(panel[panel.padd.eq(3)].reset_index(drop=True))
 display(example[['origin_month','month','stock_lag1','lag_production_kb','lag_demand_kb',
                  'forecast_flow_identity','actual_kb']].tail())
 assert (example.origin_month<example.month).all()''')
-md('''## 5. Sixteen candidates, with fixed settings
+md('''## 5. Sixteen candidates, with grid-searched parameters
 
 | Model | Specification | Main control |
 |---|---|---|
@@ -123,7 +113,6 @@ md('''## 5. Sixteen candidates, with fixed settings
 | Seasonal naive | Same month's stock last year | No fitting |
 | Seasonal change | Latest stock + mean same-month change in trailing 60 months | Five-year history; zero change if no seasonal observation |
 | Forecast-flow identity | Latest stock + forecast complete flow balance | 60-month daily-rate trend/seasonality |
-| Legacy constrained level | Original stock + four signed lagged flows | Nonnegative coefficients |
 | Complete constrained level | Stock + all eight signed lagged flows | Nonnegative coefficients |
 | Ridge change | Monthly stock change on lagged stocks/flows | Standardization; α=100 |
 | Seasonal ridge change | Ridge change plus calendar sine/cosine | α=100 |
@@ -137,14 +126,18 @@ md('''## 5. Sixteen candidates, with fixed settings
 | Ensemble change | Equal mean of seasonal ridge, forest, and XGBoost changes | Tests model averaging |
 
 All transformations fit on training data only, all models are deterministic, and stock predictions have a zero floor. The neural network uses L-BFGS without random early-stopping splits. Nonlinear models predict stock **changes** and add them to the latest stock, which avoids requiring trees to extrapolate the absolute stock level. Regression coefficients are predictive associations, not causal physical elasticities.''')
-code('''assert len(MODELS)==16
+cells[-1].source += '''
+
+The table gives the starting specifications. `parameter_grid` below lists the actual search ranges. Each learned family with a grid uses **GridSearchCV with ten chronological folds and negative stock-level MAE**. Ridge penalties, polynomial degree, spline knots/degree, forest size/depth/leaves, boosted-tree size/depth/rate/penalty, network size/penalty, and ensemble weights are searched separately for each PADD. Constrained OLS and the four baselines retain their structural definitions. Ensemble constituents retain their starting settings while voting weights are searched.
+
+Development predictions use the winning parameters on the same ten folds used for tuning. These are selection diagnostics, not nested CV performance estimates. The final 24 months are excluded from grid search. Every recursive development origin repeats ten-fold tuning using only its earlier history; holdout and future refits use the parameters chosen before the holdout.'''
+code('''assert len(MODELS)==15
 print('Complete constrained features:',columns('constrained_level'))
-print('Legacy features:',columns('legacy_constrained_level'))
 print(estimator('neural_network_change'))
 print(estimator('ensemble_change'))''')
 md('''## 6. Rebuild the experiment
 
-This cell fits and evaluates all candidates from the saved inputs. It does not download data or write to the shared database; allow a few minutes.
+This cell fits and evaluates all candidates from the saved inputs. Grid search also runs inside each recursive development origin, so a full run can take substantial time.
 
 **One-month selection:** Ten expanding folds each test 12 months. Learned parameters remain fixed within a fold while prior-month observations update. Baseline seasonal rules update using only available past data. We compare the mix of regional CV winners with every common model-family policy after summing five PADDs. Lowest national development MAE selects deployment.
 
@@ -176,7 +169,7 @@ display(gaps)
 gaps[['train_mae_kb','mae_kb']].plot.barh(figsize=(10,6),title='Mean training and annual-test errors across PADDs')
 plt.xlabel('Thousand barrels');plt.show()''')
 code('''fig,ax=plt.subplots(figsize=(12,4))
-for name in ['persistence','seasonal_change','legacy_constrained_level','xgboost_change','rolling_ridge_change']:
+for name in ['persistence','seasonal_change','constrained_level','xgboost_change','rolling_ridge_change']:
     g=folds[folds.model.eq(name)].groupby('test_end').mae_kb.mean()
     ax.plot(pd.to_datetime(g.index),g.values,label=name,marker='o')
 ax.set(title='Annual test performance changes across regimes',ylabel='Mean PADD MAE (kb)')
@@ -185,23 +178,23 @@ display(pd.read_csv(OUTPUT/'constrained_model_coefficients.csv'))''')
 md('''Train/test gaps can reflect overfitting **and** changes in market regimes. They are diagnostics, not a statistical significance test. The 60-month ridge is fitted on fewer observations, while its displayed training MAE is scored over the entire fold training history for comparability; this can penalize its deliberate focus on recent data.''')
 md('''## 8. Final one-month evaluation: July 2024–June 2026 in this run
 
-The original regression is refitted on the same development history as every other learned candidate. Thus the comparison isolates model specification and evaluation design rather than changes in sample dates.''')
+Every learned candidate is refitted on the same development history before evaluation.''')
 code('''scores=tables['us_model_metrics'].query("split=='holdout'").sort_values('mae_kb')
 display(scores)
 lookup=scores.set_index('model')
 selected=lookup.loc['deployed_policy','mae_kb']
 naive=lookup.loc['persistence','mae_kb']
-legacy=lookup.loc['legacy_constrained_level','mae_kb']
 display(Markdown(f"**Selected policy:** `{metadata['deployed_policy']}`. National MAE is **{selected:,.0f} kb**, "
-    f"versus **{naive:,.0f} kb** for persistence (**{100*(1-selected/naive):.1f}% lower**) "
-    f"and **{legacy:,.0f} kb** for the original regression (**{100*(1-selected/legacy):.2f}% lower**). "
-    "The gain over the old regression on this final period is small; the main case for the simpler rule is its development performance and transparency."))
-display(tables['padd_model_metrics'].query("split=='holdout' and model in ['deployed_policy','legacy_constrained_level','persistence']"))''')
+    f"versus **{naive:,.0f} kb** for persistence (**{100*(1-selected/naive):.1f}% lower**). "
+    "Parameters and the deployed family were selected using development data only."))
+with pd.option_context('display.max_colwidth',None,'display.max_rows',None):
+    display(tables['best_parameters'].query("params != '{}'").reset_index(drop=True))
+display(tables['padd_model_metrics'].query("split=='holdout' and model in ['deployed_policy','constrained_level','persistence']"))''')
 code('''hold=tables['us_predictions'].query("split=='holdout'")
 actual=hold[hold.model.eq('deployed_policy')]
 fig,axes=plt.subplots(2,1,figsize=(12,7),sharex=True)
 axes[0].plot(actual.month,actual.actual_kb/1000,color='black',linewidth=2,label='Actual')
-for name in ['deployed_policy','legacy_constrained_level','persistence']:
+for name in ['deployed_policy','constrained_level','persistence']:
     g=hold[hold.model.eq(name)]
     axes[0].plot(g.month,g.predicted_kb/1000,label=name,alpha=.8)
 axes[0].set(title='Final one-month evaluation: total U.S. crude stocks',ylabel='Million barrels');axes[0].legend()
@@ -210,7 +203,7 @@ axes[1].axhline(0,color='black');axes[1].set(ylabel='Forecast − actual (millio
 plt.tight_layout();plt.show()''')
 md('''## 9. JODI national context
 
-JODI CRUDEOIL observations are snapshotted from the local database and currently end earlier than the refreshed EIA history. JODI is never a predictive input here and has no PADD dimension. It is a separate archive, not necessarily an independent measurement process; national definitions, coverage, revisions, and reporting dates can differ. We show the levels and differences rather than assuming they are interchangeable targets. See the [JODI stock guide](https://www.jodidata.org/oil/support/user-guide/data-available-in-the-jodi-oil-world-database.aspx).''')
+JODI CRUDEOIL observations are snapshotted from the local database and currently end before the EIA history. JODI is never a predictive input here and has no PADD dimension. It is a separate data source, not necessarily an independent measurement process; national definitions, coverage, revisions, and reporting dates can differ. We show the levels and differences rather than assuming they are interchangeable targets. See the [JODI stock guide](https://www.jodidata.org/oil/support/user-guide/data-available-in-the-jodi-oil-world-database.aspx).''')
 code('''history=tables['us_monthly_model']
 jodi=tables['jodi_us_benchmark']
 print('Latest JODI month:',jodi.month.max().date())
@@ -223,7 +216,7 @@ md('''## 10. Long-horizon development selection and final evaluation
 
 A one-month model updates with actual prior stock each month. A 12-month path feeds its own predictions forward. These are different tasks.
 
-The table below selects the 12-month policy from six development years. Final evaluation then uses 13 monthly origins, each forecasting 12 months entirely inside the final 24-month period. The overlapping paths are **correlated**, not 13 independent years. Each origin refits using only data available through that origin, with model names fixed from development selection. We also carry forward the one-month policy and compare persistence and the original regression.''')
+The table below selects the 12-month policy from six development years. Final evaluation then uses 13 monthly origins, each forecasting 12 months entirely inside the final 24-month period. The overlapping paths are **correlated**, not 13 independent years. Each origin refits using only data available through that origin, with model names fixed from development selection. We also carry forward the one-month policy and compare persistence and constrained regression.''')
 code('''display(tables['horizon_policy_cv_metrics'])
 cv_paths=tables['us_recursive_cv_predictions']
 display(cv_paths[cv_paths.model.eq('persistence')].groupby('origin_month').agg(first_target=('month','min'),last_target=('month','max')))
@@ -241,14 +234,15 @@ persistence_mae=recursive_summary.loc['persistence','mean']
 display(Markdown(f"**Long-horizon limitation:** The development-selected `{metadata['horizon_policy']}` policy "
     f"has recursive final-period MAE of **{recursive_mae:,.0f} kb**, versus **{persistence_mae:,.0f} kb** for persistence. "
     "Historical development selection does not guarantee better forecasts after a policy or market regime changes. "
-    "Do not treat the selected 12-month path as a demonstrated improvement over unchanged stocks."))
+    + ("The selected policy does not beat persistence in this evaluation." if recursive_mae >= persistence_mae else
+     "The selected policy beats persistence on these correlated evaluation paths; this is a retrospective result.")))
 fig,axes=plt.subplots(1,2,figsize=(14,4))
 origins=sorted(recursive.origin_month.unique())
 for origin,ax in zip([origins[0],origins[-1]],axes):
     g=recursive[recursive.origin_month.eq(origin)]
     a=g[g.model.eq('deployed_policy')]
     ax.plot(a.month,a.actual_kb/1000,color='black',label='Actual')
-    for name in ['deployed_policy','legacy_constrained_level','persistence']:
+    for name in ['deployed_policy','constrained_level','persistence']:
         t=g[g.model.eq(name)];ax.plot(t.month,t.predicted_kb/1000,label=name)
     ax.set(title=f'Origin {pd.Timestamp(origin):%Y-%m}',ylabel='Million barrels');ax.legend(fontsize=8)
 plt.tight_layout();plt.show()''')
@@ -259,7 +253,7 @@ The outlook starts after the last observed EIA month, **June 2026**, so it spans
 
 The complete projected flow balance feeds a raw accounting path. The statistical stock model can disagree with it; `model_reconciliation_kb = predicted stock change − projected flow balance` exposes that disagreement. It is not an observed EIA adjustment. The raw identity path remains unclipped so impossible paths would be visible.
 
-The one-month and 12-month policies are selected separately. `latest_forecast.csv` contains the one-month policy, while `*_forecast_12m.csv` contains the long-horizon policy. They happen to select the same rule in this run; future reruns may differ.''')
+The one-month and 12-month policies are selected separately. `latest_forecast.csv` contains the one-month policy, while `*_forecast_12m.csv` contains the long-horizon policy. Their selected model names are recorded in the results and metadata.''')
 code('''outlook=tables['us_forecast_12m']
 display(outlook[['month','production_kb','demand_kb','imports_kb','exports_kb','transfers_kb',
     'adjustments_kb','balance_kb','stock_kb','identity_stock_unclipped_kb','model_reconciliation_kb']])
@@ -284,7 +278,7 @@ md('''## 12. Conclusions and reproducibility
 
 **Implemented improvements:** Correct month alignment for accounting; a complete regional balance; explicit SPR scope; historical input snapshots; candidate models on identical dates; a final period excluded from selection; selection on national error; separate recursive development tests; visible fitting warnings and model/flow discrepancies.
 
-**What the experiments support:** A simpler seasonal-change rule improves development and one-month final-period MAE over persistence. Its final-period gain over the original regression is very small. Larger, rolling, damped, and ensemble models do not automatically improve the selected national objective. The development-selected long-horizon rule fails to beat persistence in the final period. Better validation is valuable even when it rejects a stronger performance claim.
+**How to interpret the tuned results:** The tables above report the grid-selected models, their chosen parameters, and subsequent one-month and recursive performance against persistence and constrained regression. Ten-fold grid search minimizes development MAE; those same-fold selection scores are optimistic. Parameter optimization does not guarantee an improvement in the final period. This remains a retrospective experiment.
 
 **Remaining limitations:** Latest-vintage rather than release-vintage data; small retrospective final sample; correlated multi-horizon errors; unmodeled SPR policy changes; reporting-category changes and flagged zero assumptions; no calibrated uncertainty intervals. Commercial-only modeling with explicit reserve scenarios and actual release-vintage evaluation are future experiments, not completed performance improvements.
 
@@ -297,7 +291,7 @@ python us_snd_model.py --refresh-data    # refresh EIA; snapshot local JODI
 python -m pytest -q
 ```
 
-Run All reproduces the experiment and charts. `data/` preserves inputs and provenance; `model_output/` contains all predictions, metrics, chosen policies, coefficients, forecasts, and serialized one-month and long-horizon models. `MODEL_REVIEW.md` records findings and limitations. Original work is archived under `legacy_results_20260905/`. The shared database is read-only.''')
+Run All reproduces the experiment and charts. `data/` preserves inputs and provenance; `model_output/` contains all predictions, metrics, chosen policies, coefficients, forecasts, and serialized one-month and long-horizon models. The shared database is read-only.''')
 code('''display(pd.Series(metadata,name='Run configuration'))
 assert not tables['padd_predictions'].duplicated(['padd','month','model','split']).any()
 assert tables['padd_forecast_12m'].groupby('month').padd.nunique().eq(5).all()
@@ -313,8 +307,14 @@ import ast
 import textwrap
 model_source=(HERE/'us_snd_model.py').read_text()
 data_source=(HERE/'crude_data.py').read_text()
+# The standalone notebook presents only the current candidate set.
+model_source=model_source.replace("'legacy_constrained_level', ", '')
+model_source=model_source.replace("if name == 'legacy_constrained_level':\n        return ['stock_lag1'] + ['lag_' + c for c in FLOWS[:4]]\n    ", '')
+model_source=model_source.replace("['constrained_level', 'legacy_constrained_level']", "['constrained_level']")
+model_source=model_source.replace("['deployed_policy', 'one_step_policy_recursive', 'persistence', 'legacy_constrained_level']",
+                                  "['deployed_policy', 'one_step_policy_recursive', 'persistence', 'constrained_level']")
 def definition(source,name):
-    node=next(n for n in ast.parse(source).body if isinstance(n,ast.FunctionDef) and n.name==name)
+    node=next(n for n in ast.parse(source).body if isinstance(n,(ast.FunctionDef,ast.ClassDef)) and n.name==name)
     return ast.get_source_segment(source,node)
 def definitions(source,*names):
     return '\n\n\n'.join(definition(source,n) for n in names)
@@ -329,6 +329,7 @@ import pandas as pd
 import matplotlib.pyplot as plt
 import requests, duckdb, joblib, sklearn, xgboost
 from sklearn.exceptions import ConvergenceWarning
+from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.linear_model import LinearRegression, Ridge
 from sklearn.ensemble import RandomForestRegressor, VotingRegressor
 from sklearn.neural_network import MLPRegressor
@@ -336,7 +337,7 @@ from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler, PolynomialFeatures, SplineTransformer
 from sklearn.compose import TransformedTargetRegressor
 from sklearn.metrics import mean_absolute_error, mean_squared_error, r2_score
-from sklearn.model_selection import TimeSeriesSplit
+from sklearn.model_selection import GridSearchCV, TimeSeriesSplit
 from xgboost import XGBRegressor
 from IPython.display import display, Markdown
 
@@ -373,13 +374,13 @@ run_explanations=[
     ('6c. Select a separate twelve-month policy',
      'Run each candidate through six complete, disjoint development-year forecasts. Inside each path, future observed stocks and flows are unavailable. Choose the lowest national development MAE and refit for the outlook.'),
     ('6d. Evaluate recursive forecasts on the final period',
-     'At each of thirteen monthly origins, refit using available history and generate a full year. Compare the long-horizon selection, the one-month selection used recursively, persistence, and the original regression. The overlapping errors are correlated.'),
+     'At each of thirteen monthly origins, refit using available history and generate a full year. Compare the long-horizon selection, the one-month selection used recursively, persistence, and constrained regression. The overlapping errors are correlated.'),
     ('6e. Assemble historical benchmarks and the latest forecast',
      'Sum complete PADD histories, reshape the JODI snapshot, and join by month. JODI is context only. The latest forecast combines five regional rows and one U.S. row.'),
     ('6f. Save predictions, scores, coefficients, and models',
      'Every displayed result is built from the frames above. The exports preserve individual predictions as well as aggregate scores, so another reader can check the metrics. A baseline needs its rule and historical inputs, not a fitted sklearn estimator.'),
     ('6g. Record the experiment configuration',
-     'Save units, dates, feature/model settings, policy choices, software versions, and limitations alongside the results. These are generated from this run, not loaded from an earlier result.')]
+     'Save units, dates, feature/model settings, policy choices, software versions, and limitations alongside the results.')]
 run_displays=[
     "display(fold_metrics.groupby('model').agg(folds=('fold','count'),test_mae_kb=('mae_kb','mean')))\ndisplay(selection)",
     "display(policy_scores.sort_values('mae_kb'))\nprint('One-month policy:', policy)",
@@ -391,11 +392,11 @@ run_displays=[
 expanded=[]
 for i,c in enumerate(cells):
     if i==0:
-        c.source += "\n\n**Everything needed to understand the work is below:** source handling, full feature and model code, a worked validation example, the complete experiment in seven visible stages, diagnostics, conclusions, and checks. No project `.py` imports or external review document are needed. Run All uses the accompanying `data/` snapshots; all result tables and figures are already saved in this notebook."
+        c.source += "\n\n**Everything needed to understand the work is below:** source handling, full feature and model code, a worked validation example, the complete experiment in seven visible stages, diagnostics, conclusions, and checks. No project `.py` imports are needed. Run All uses the accompanying `data/` snapshots; all result tables and figures are already saved in this notebook."
         expanded.append(c)
         expanded.append(markdown('''### Reading guide
 
-1. **Understand the inputs:** Sections 1–3 explain the review, series definitions, missing values, SPR, and balance checks.
+1. **Understand the inputs:** Sections 1–3 explain the model scope, series definitions, missing values, SPR, and balance checks.
 2. **Understand the models:** Sections 4–5 show exactly how a forecast row and each candidate are built.
 3. **Follow the experiment:** Section 6 runs the full validation and forecast workflow step by step.
 4. **Read the evidence:** Sections 7–11 compare results and expose where the models fail.
@@ -429,22 +430,24 @@ The downloader below preserves the XLS source bytes and their hashes, normalizes
           markdown('''### Exact model definitions
 
 These constants specify the feature sets. `estimator` declares every learned model and its settings. `fit` chooses stock level or stock change as the target; `predict` converts changes back into levels and implements the simple baselines.'''),
-          python(model_source[model_source.index('BASELINES ='):model_source.index('\n\ndef seasonal_design')]),
+          python(model_source[model_source.index('BASELINES ='):model_source.index('\n\ndef parameter_grid')]),
           python(definitions(model_source,'columns','estimator')),
           python(definitions(model_source,'fit','predict')),
+          python(definitions(model_source,'parameter_grid','StockRegressor','tune')),
+          python("display(pd.DataFrame([{'model':name,'param_grid':parameter_grid(name)} for name in LEARNED]))"),
           markdown('''### How errors and national totals are calculated
 
 MAE averages absolute errors; RMSE squares errors before averaging and taking a square root; R² compares squared errors with variation around the evaluation sample mean. `aggregate` checks five distinct PADDs for every key before summing—regional MAEs are never added to obtain national MAE.'''),
           python(definitions(model_source,'score','aggregate','metric_table')),
           markdown('''### One worked fold, before the full comparison
 
-This small example trains the original constrained model for PADD 3 on the first development training window, predicts the following year, and shows each error. It uses the same `fit`, `predict`, and `score` functions as the full experiment.'''),
+This small example trains the constrained model for PADD 3 on the first development training window, predicts the following year, and shows each error. It uses the same `fit`, `predict`, and `score` functions as the full experiment.'''),
           python("""worked = supervised(panel[panel.padd.eq(3)].reset_index(drop=True))
 development_example = worked.iloc[:-24]
 train_idx, test_idx = next(TimeSeriesSplit(n_splits=10, test_size=12).split(development_example))
 train_example, test_example = development_example.iloc[train_idx], development_example.iloc[test_idx]
-example_model, example_warning = fit('legacy_constrained_level', train_example)
-example_predictions = predict('legacy_constrained_level', example_model, test_example)
+example_model, example_warning = fit('constrained_level', train_example)
+example_predictions = predict('constrained_level', example_model, test_example)
 worked_results = test_example[['origin_month','month','actual_kb']].copy()
 worked_results['predicted_kb'] = example_predictions
 worked_results['absolute_error_kb'] = abs(worked_results.actual_kb-worked_results.predicted_kb)
@@ -465,12 +468,11 @@ The implementation below fits transformations and models separately in each trai
 
 For a year-long path, forecast all flows using history at the origin. Then predict one stock at a time and append that predicted month to the history used for the next step. The raw balance path and statistical stock path remain separate, with an explicit reconciliation difference.'''),
           python(definition(model_source,'forecast')),
-          python("data_dir=HERE/'data'\noutput_dir=OUTPUT\nfolds=10")])
+          python("data_dir=HERE/'data'\noutput_dir=OUTPUT\nfolds=10\njobs=8")])
         for block,(title,explanation),display_code in zip(blocks,run_explanations,run_displays):
             expanded.extend([markdown('### '+title+'\n\n'+explanation),python(block+'\n\n'+display_code)])
         continue
     if i==32:
-        c.source=c.source.replace('`MODEL_REVIEW.md` records findings and limitations.', 'All review findings, model implementations, and limitations are included above; the companion review document is optional.')
         c.source=c.source.replace('Run All reproduces the experiment and charts.', 'Run All executes the implementations in this notebook and reproduces the experiment and charts without importing any local Python module. Share this notebook with its `data/` folder to reproduce offline; saved outputs can be read without running code.')
         expanded.append(c)
         expanded.append(markdown('''### Reproducibility checks included in the notebook
@@ -494,5 +496,18 @@ print('Source integrity, stock scope, target-month isolation, and aggregation ch
     expanded.append(c)
 cells=expanded
 nb=nbf.v4.new_notebook(cells=cells,metadata={'kernelspec':{'display_name':'Python 3','language':'python','name':'python3'},'language_info':{'name':'python'}})
+parser=argparse.ArgumentParser(description=__doc__)
+parser.add_argument('--preserve-outputs',action='store_true',
+    help='Keep execution outputs for unchanged code cells when updating notebook source.')
+args=parser.parse_args()
+if args.preserve_outputs and (HERE/'us_snd_model_results.ipynb').exists():
+    old=nbf.read(HERE/'us_snd_model_results.ipynb',as_version=4)
+    prior={c.source:c for c in old.cells if c.cell_type=='code'}
+    for cell in nb.cells:
+        if cell.cell_type=='code' and cell.source in prior:
+            previous=prior[cell.source]
+            cell.outputs=previous.outputs
+            cell.execution_count=previous.execution_count
+            cell.metadata=previous.metadata
 nbf.write(nb,HERE/'us_snd_model_results.ipynb')
 print('Created',len(cells),'cells')
