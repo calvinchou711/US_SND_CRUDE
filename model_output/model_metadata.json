@@ -1,26 +1,33 @@
 {
-  "product": "Total crude oil including SPR; commercial and SPR stocks shown separately",
+  "product": "Commercial crude oil; excludes strategic reserves",
+  "covid_exclusion": {
+    "start": "2020-03-01",
+    "end": "2021-03-01",
+    "inclusive": true,
+    "method": "Exclude targets and direct lag inputs touching COVID from stock fitting; exclude COVID observations from flow fits and seasonal averages; preserve the full calendar and historical balance.",
+    "evaluation": "Exclude COVID target months from development selection; full recursive development years avoid COVID; final 24 months unchanged."
+  },
   "stock_units": "thousand barrels at month end",
-  "flow_units": "thousand barrels per calendar month",
-  "equation": "S[t] = S[t-1] + field production[t] + imports[t] + net receipts[t] + adjustments[t] + transfers to crude[t] - refinery input[t] - exports[t] - direct use[t] + residual[t]",
+  "flow_units": "thousand barrels per day",
+  "equation": "S[t] = S[t-1] + days[t] * (field production[t] + imports[t] + net receipts[t] + adjustments[t] + transfers to crude[t] - refinery input[t] - exports[t] - direct use[t] + residual[t])",
   "data_start": "2007-01-01",
   "data_end": "2026-06-01",
-  "cv": "10 expanding folds, 12 test months each; final 24 months excluded from selection",
+  "cv": "10 expanding folds, 12 eligible test months each; final 24 months excluded from selection",
   "holdout_start": "2024-07-01",
   "forecast_timing": "One month after latest observed EIA month; conditional on prior monthly data being available. Current revised history, not a real-time release-vintage backtest.",
-  "selection": "GridSearchCV per PADD/model on development data; PADD winners plus common-family policies; lowest national development MAE chooses deployment; no holdout tuning",
+  "selection": "GridSearchCV per PADD/model on development data; PADD winners plus common model families; lowest national development MAE chooses the one-month model; no holdout tuning",
   "hyperparameter_search": {
     "method": "GridSearchCV",
     "folds": 10,
     "scoring": "neg_mean_absolute_error",
-    "splitter": "TimeSeriesSplit; 12-month development test blocks; default block size inside recursive origins",
+    "splitter": "TimeSeriesSplit on non-COVID target dates; 12 eligible observations per development block; default block size inside recursive origins",
     "evaluation": "Development scores reuse tuning folds and are selection scores, not nested CV estimates. Final 24 months excluded from all searches.",
     "recursive": "Each development origin retunes on its past history. Holdout and final refits freeze parameters selected before holdout."
   },
-  "deployed_policy": "seasonal_change",
-  "horizon_policy": "seasonal_change",
-  "horizon_selection": "Lowest national MAE across six disjoint 12-month development paths, July 2018\u2013June 2024 in saved run; all 16 candidates compared",
-  "flow_forecast": "Last 60 months, daily rates, linear trend and month fixed effects",
+  "one_month_model": "seasonal_change",
+  "year_ahead_model": "constrained_level",
+  "horizon_selection": "Lowest national MAE across six disjoint 12-month development paths, six full non-COVID development years; all 17 candidates compared",
+  "flow_forecast": "Last 60 non-COVID observations, daily rates, linear trend and month fixed effects; crude run = forecast utilization ratio (clipped 0\u20131) times CDU capacity fixed at origin",
   "forecast_stock_floor": 0,
   "uncertainty": "Point forecasts only; no calibrated prediction intervals",
   "recursive_validation": "13 overlapping 12-month paths entirely in final holdout; refit at each origin; correlated errors",
@@ -33,7 +40,6 @@
   },
   "sources": [
     "https://www.eia.gov/dnav/pet/pet_sum_snd_d_r10_mbbl_m_cur.htm",
-    "https://www.eia.gov/dnav/pet/TblDefs/pet_sum_snd_tbldef2.asp",
-    "https://www.jodidata.org/oil/"
+    "https://www.eia.gov/dnav/pet/TblDefs/pet_sum_snd_tbldef2.asp"
   ]
 }

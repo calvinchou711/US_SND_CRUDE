@@ -47,12 +47,6 @@ STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
 Increase the number of iterations to improve the convergence (max_iter=3000).
 You might also want to scale the data as shown in:
     https://scikit-learn.org/stable/modules/preprocessing.html"
-4,neural_network_change,recursive_grid_search,"lbfgs failed to converge after 3000 iteration(s) (status=1):
-STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
-
-Increase the number of iterations to improve the convergence (max_iter=3000).
-You might also want to scale the data as shown in:
-    https://scikit-learn.org/stable/modules/preprocessing.html"
 5,neural_network_change,recursive_grid_search,"lbfgs failed to converge after 3000 iteration(s) (status=1):
 STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
 
@@ -66,12 +60,6 @@ Increase the number of iterations to improve the convergence (max_iter=3000).
 You might also want to scale the data as shown in:
     https://scikit-learn.org/stable/modules/preprocessing.html"
 2,neural_network_change,recursive_grid_search,"lbfgs failed to converge after 3000 iteration(s) (status=1):
-STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
-
-Increase the number of iterations to improve the convergence (max_iter=3000).
-You might also want to scale the data as shown in:
-    https://scikit-learn.org/stable/modules/preprocessing.html"
-3,neural_network_change,recursive_grid_search,"lbfgs failed to converge after 3000 iteration(s) (status=1):
 STOP: TOTAL NO. OF ITERATIONS REACHED LIMIT
 
 Increase the number of iterations to improve the convergence (max_iter=3000).

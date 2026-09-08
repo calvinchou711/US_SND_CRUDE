@@ -81,26 +81,6 @@
   },
   {
     "padd": 1,
-    "component": "stock_kb",
-    "series_id": "MCRSTP11",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSTP11m.xls",
-    "title": "East Coast (PADD 1) Ending Stocks of Crude Oil (Thousand Barrels)",
-    "sha256": "f2b64f1626c01e396ab57860c99b192f961e349ef462dc42d981aa85a80a4e18",
-    "retrieved_utc": "2026-09-05T21:33:53.956066+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 1,
-    "component": "reported_stock_change_kb",
-    "series_id": "MCRSCP11",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSCP11m.xls",
-    "title": "East Coast (PADD 1) Crude Oil Stock Change (Thousand Barrels)",
-    "sha256": "46faaf0b2330ca58ad478e7710b53ea4da23afd798e6b2ae37b85f2c76f70f3e",
-    "retrieved_utc": "2026-09-05T21:33:54.030762+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 1,
     "component": "commercial_stock_kb",
     "series_id": "MCESTP11",
     "url": "https://www.eia.gov/dnav/pet/hist_xls/MCESTP11m.xls",
@@ -188,26 +168,6 @@
     "sha256": "a6bd7acf0c0df353ba84feeda2b5c601885ad3bf8364fdb2e176140ef737222c",
     "retrieved_utc": "2026-09-05T21:33:54.261481+00:00",
     "rows": 289
-  },
-  {
-    "padd": 2,
-    "component": "stock_kb",
-    "series_id": "MCRSTP21",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSTP21m.xls",
-    "title": "Midwest (PADD 2) Ending Stocks of Crude Oil (Thousand Barrels)",
-    "sha256": "5ae9f1f422391c90719ab88849743633c4b2f5459ea46f2bf0649b7048d020c2",
-    "retrieved_utc": "2026-09-05T21:33:54.208152+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 2,
-    "component": "reported_stock_change_kb",
-    "series_id": "MCRSCP21",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSCP21m.xls",
-    "title": "Midwest (PADD 2) Crude Oil Stock Change (Thousand Barrels)",
-    "sha256": "2d5fb2fd46741a82517deac8d971ed1c0689b4a969d6a59dd9d366d5260bce13",
-    "retrieved_utc": "2026-09-05T21:33:54.296064+00:00",
-    "rows": 546
   },
   {
     "padd": 2,
@@ -301,26 +261,6 @@
   },
   {
     "padd": 3,
-    "component": "stock_kb",
-    "series_id": "MCRSTP31",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSTP31m.xls",
-    "title": "Gulf Coast (PADD 3) Ending Stocks of Crude Oil (Thousand Barrels)",
-    "sha256": "899d2b426069430854b032f28e9e6a07e5bde57a2ce2d038a506f61335b4c4a9",
-    "retrieved_utc": "2026-09-05T21:33:54.494986+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 3,
-    "component": "reported_stock_change_kb",
-    "series_id": "MCRSCP31",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSCP31m.xls",
-    "title": "Gulf Coast (PADD 3) Crude Oil Stock Change (Thousand Barrels)",
-    "sha256": "5177d7748ec74eda5bb96151643fd258b530ebad165e6e9643e095964a3858df",
-    "retrieved_utc": "2026-09-05T21:33:54.544851+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 3,
     "component": "commercial_stock_kb",
     "series_id": "MCESTP31",
     "url": "https://www.eia.gov/dnav/pet/hist_xls/MCESTP31m.xls",
@@ -408,26 +348,6 @@
     "sha256": "ada2932c6feec7590bff8c3f46cbdef28bb2fe66d27454eb526308261c9a9925",
     "retrieved_utc": "2026-09-05T21:33:54.877740+00:00",
     "rows": 354
-  },
-  {
-    "padd": 4,
-    "component": "stock_kb",
-    "series_id": "MCRSTP41",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSTP41m.xls",
-    "title": "Rocky Mountain (PADD 4) Ending Stocks of Crude Oil (Thousand Barrels)",
-    "sha256": "96cf576751b78941967572aadc2a75e0e253e560be4bd92ba8d3e6e4978998f4",
-    "retrieved_utc": "2026-09-05T21:33:54.877537+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 4,
-    "component": "reported_stock_change_kb",
-    "series_id": "MCRSCP41",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSCP41m.xls",
-    "title": "Rocky Mountain (PADD 4) Crude Oil Stock Change (Thousand Barrels)",
-    "sha256": "0629c1411f52c95cbe7a117d4cec2f4e57b923c24a074854e1a38f645f809606",
-    "retrieved_utc": "2026-09-05T21:33:54.871042+00:00",
-    "rows": 546
   },
   {
     "padd": 4,
@@ -521,26 +441,6 @@
   },
   {
     "padd": 5,
-    "component": "stock_kb",
-    "series_id": "MCRSTP51",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSTP51m.xls",
-    "title": "West Coast (PADD 5) Ending Stocks of Crude Oil (Thousand Barrels)",
-    "sha256": "f112e46aa22397310ef8ce8d82ab8452f5a25307b10eb11dca8bdcf94e2f879f",
-    "retrieved_utc": "2026-09-05T21:33:55.101862+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 5,
-    "component": "reported_stock_change_kb",
-    "series_id": "MCRSCP51",
-    "url": "https://www.eia.gov/dnav/pet/hist_xls/MCRSCP51m.xls",
-    "title": "West Coast (PADD 5) Crude Oil Stock Change (Thousand Barrels)",
-    "sha256": "6ce717f96cb568356f2344d89cd1a284336028948ec0f85db2cc63c289fcda85",
-    "retrieved_utc": "2026-09-05T21:33:55.141469+00:00",
-    "rows": 546
-  },
-  {
-    "padd": 5,
     "component": "commercial_stock_kb",
     "series_id": "MCESTP51",
     "url": "https://www.eia.gov/dnav/pet/hist_xls/MCESTP51m.xls",
@@ -548,5 +448,55 @@
     "sha256": "1461f960fda1b2e1dd979927e3c2afe272b841a289ecddd47402e3d1bc9a7ff4",
     "retrieved_utc": "2026-09-05T21:33:55.142173+00:00",
     "rows": 546
+  },
+  {
+    "padd": 1,
+    "component": "cdu_capacity_kbd",
+    "series_id": "MOCLEP12",
+    "url": "https://www.eia.gov/dnav/pet/hist_xls/MOCLEP12m.xls",
+    "title": "East Coast (PADD 1) Operable Crude Oil Distillation Capacity  (Thousand Barrels per Calendar Day)",
+    "sha256": "13428eef6a735ad0a3b4091b8cc0469c4ca75b518b26bda261fdc0bbaa57e66f",
+    "retrieved_utc": "2026-09-07T13:29:36.452094+00:00",
+    "rows": 498
+  },
+  {
+    "padd": 2,
+    "component": "cdu_capacity_kbd",
+    "series_id": "MOCLEP22",
+    "url": "https://www.eia.gov/dnav/pet/hist_xls/MOCLEP22m.xls",
+    "title": "Midwest (PADD 2) Operable Crude Oil Distillation Capacity  (Thousand Barrels per Calendar Day)",
+    "sha256": "420c41e42251408be5d2a66a0e660f64e212363218cfc584d3e4ea0eb24fc8ce",
+    "retrieved_utc": "2026-09-07T13:29:36.724963+00:00",
+    "rows": 498
+  },
+  {
+    "padd": 3,
+    "component": "cdu_capacity_kbd",
+    "series_id": "MOCLEP32",
+    "url": "https://www.eia.gov/dnav/pet/hist_xls/MOCLEP32m.xls",
+    "title": "Gulf Coast (PADD 3) Operable Crude Oil Distillation Capacity  (Thousand Barrels per Calendar Day)",
+    "sha256": "d8ebdb1961dc6f67d0ff529fc590102f7e7111115cdd7dc61824410cce8bbea1",
+    "retrieved_utc": "2026-09-07T13:29:36.879562+00:00",
+    "rows": 498
+  },
+  {
+    "padd": 4,
+    "component": "cdu_capacity_kbd",
+    "series_id": "MOCLEP42",
+    "url": "https://www.eia.gov/dnav/pet/hist_xls/MOCLEP42m.xls",
+    "title": "Rocky Mountains (PADD 4) Operable Crude Oil Distillation Capacity  (Thousand Barrels per Calendar Day)",
+    "sha256": "f607e4eef8f3ba8a78968c2ef2d988b1e42188fca74d34049e117f0877ed1ec7",
+    "retrieved_utc": "2026-09-07T13:29:37.003728+00:00",
+    "rows": 498
+  },
+  {
+    "padd": 5,
+    "component": "cdu_capacity_kbd",
+    "series_id": "MOCLEP52",
+    "url": "https://www.eia.gov/dnav/pet/hist_xls/MOCLEP52m.xls",
+    "title": "West Coast (PADD 5) Operable Crude Oil Distillation Capacity  (Thousand Barrels per Calendar Day)",
+    "sha256": "7b573b13c3347039e5e2f466f8db03d7b1c2e053372a0d5bc9ba6e474dd69dbd",
+    "retrieved_utc": "2026-09-07T13:29:37.085107+00:00",
+    "rows": 498
   }
 ]

@@ -29,17 +29,12 @@ if __name__ == '__main__':
             end = next(i for i,c in enumerate(notebook.cells) if c.source.startswith("folds=tables['fold_metrics']"))
             with client.setup_kernel():
                 for i, cell in enumerate(notebook.cells):
-                    if cell.cell_type == 'code' and start <= i < end:
-                        cell.outputs = []
-                        cell.execution_count = None
                     if i == end:
                         setup = nbformat.v4.new_code_cell('''
 metadata = json.loads((OUTPUT/'model_metadata.json').read_text())
 assert metadata['hyperparameter_search']['folds'] == 10
 tables = {p.stem: pd.read_csv(p) for p in OUTPUT.glob('*.csv')}
 for table in tables.values():
-    if 'model' in table:
-        table.drop(table.index[table.model.eq('legacy_constrained_level')], inplace=True)
     for column in ['month', 'origin_month', 'train_end', 'test_start', 'test_end']:
         if column in table:
             table[column] = pd.to_datetime(table[column])

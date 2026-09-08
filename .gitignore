@@ -4,3 +4,4 @@ __pycache__/
 .ipynb_checkpoints/
 .DS_Store
 model_output_before_grid_search_20260906/
+model_output_before_covid_exclusion_20260907/
