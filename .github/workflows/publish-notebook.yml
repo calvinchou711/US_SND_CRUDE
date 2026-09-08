@@ -1,4 +1,4 @@
-name: Publish notebook to portfolio
+name: Publish notebooks to portfolio
 
 on:
   push:
@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - us_snd_model_results.ipynb
+      - predictors_crude.ipynb
       - .github/workflows/publish-notebook.yml
   workflow_dispatch:
 
@@ -13,7 +14,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: publish-notebook-${{ github.repository }}
+  group: publish-notebooks-${{ github.repository }}
   cancel-in-progress: true
 
 jobs:
@@ -33,37 +34,43 @@ jobs:
       - name: Install notebook exporter
         run: python -m pip install --disable-pip-version-check "nbconvert==7.16.6"
 
-      - name: Confirm the notebook contains saved results
+      - name: Confirm the notebooks contain saved results
         run: |
-          python - <<'PY'
+          for notebook in us_snd_model_results.ipynb predictors_crude.ipynb; do
+            python - "$notebook" <<'PY'
           import json
+          import sys
           from pathlib import Path
 
-          notebook_path = Path("us_snd_model_results.ipynb")
+          notebook_path = Path(sys.argv[1])
           notebook = json.loads(notebook_path.read_text(encoding="utf-8"))
           code_cells = [cell for cell in notebook.get("cells", []) if cell.get("cell_type") == "code"]
           saved_outputs = sum(len(cell.get("outputs", [])) for cell in code_cells)
 
           if saved_outputs == 0:
               raise SystemExit(
-                  "The notebook has no saved outputs. Run it locally and commit the updated notebook before publishing."
+                  f"{notebook_path} has no saved outputs. Run it locally and commit it before publishing."
               )
 
-          print(f"Found {saved_outputs} saved output blocks in {len(code_cells)} code cells.")
+          print(f"{notebook_path}: {saved_outputs} saved output blocks in {len(code_cells)} code cells.")
           PY
+          done
 
-      - name: Render the committed notebook
+      - name: Render the committed notebooks
         run: |
           mkdir -p publish
-          jupyter nbconvert \
-            --to html \
-            --template lab \
-            --HTMLExporter.exclude_input_prompt=True \
-            --HTMLExporter.exclude_output_prompt=True \
-            --output us_snd_model_results.html \
-            --output-dir publish \
-            us_snd_model_results.ipynb
-          cp us_snd_model_results.ipynb publish/
+          for notebook in us_snd_model_results.ipynb predictors_crude.ipynb; do
+            output_name="${notebook%.ipynb}.html"
+            jupyter nbconvert \
+              --to html \
+              --template lab \
+              --HTMLExporter.exclude_input_prompt=True \
+              --HTMLExporter.exclude_output_prompt=True \
+              --output "$output_name" \
+              --output-dir publish \
+              "$notebook"
+            cp "$notebook" publish/
+          done
 
       - name: Configure secure Bluehost connection
         env:
@@ -75,7 +82,7 @@ jobs:
           chmod 600 "$RUNNER_TEMP/bluehost_deploy_key"
           chmod 644 "$RUNNER_TEMP/bluehost_known_hosts"
 
-      - name: Upload notebook to portfolio
+      - name: Upload notebooks to portfolio
         env:
           DEPLOY_HOST: 162.241.216.86
           DEPLOY_USER: calvind0
@@ -85,18 +92,45 @@ jobs:
             -i "$RUNNER_TEMP/bluehost_deploy_key"
             -o IdentitiesOnly=yes
             -o StrictHostKeyChecking=yes
+            -o ConnectTimeout=15
             -o "UserKnownHostsFile=$RUNNER_TEMP/bluehost_known_hosts"
           )
 
-          html_temp="$DEPLOY_DIR/.us_snd_model_results.html.$GITHUB_RUN_ID"
-          notebook_temp="$DEPLOY_DIR/.us_snd_model_results.ipynb.$GITHUB_RUN_ID"
+          control_path="$RUNNER_TEMP/bluehost_control"
+          connected=false
+          for attempt in 1 2 3 4 5; do
+            if ssh "${ssh_options[@]}" -M -S "$control_path" -o ControlPersist=60 -fnNT \
+              "$DEPLOY_USER@$DEPLOY_HOST"; then
+              connected=true
+              break
+            fi
+            sleep $((attempt * 10))
+          done
 
-          scp "${ssh_options[@]}" publish/us_snd_model_results.html \
-            "$DEPLOY_USER@$DEPLOY_HOST:$html_temp"
-          scp "${ssh_options[@]}" publish/us_snd_model_results.ipynb \
-            "$DEPLOY_USER@$DEPLOY_HOST:$notebook_temp"
+          if [ "$connected" != true ]; then
+            echo "Unable to establish the Bluehost deployment connection after five attempts."
+            exit 1
+          fi
 
-          ssh "${ssh_options[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
-            "mv '$html_temp' '$DEPLOY_DIR/us_snd_model_results.html' && \
-             mv '$notebook_temp' '$DEPLOY_DIR/us_snd_model_results.ipynb' && \
-             chmod 644 '$DEPLOY_DIR/us_snd_model_results.html' '$DEPLOY_DIR/us_snd_model_results.ipynb'"
+          shared_connection=(-o "ControlPath=$control_path")
+          files=(
+            us_snd_model_results.html
+            us_snd_model_results.ipynb
+            predictors_crude.html
+            predictors_crude.ipynb
+          )
+
+          for file_name in "${files[@]}"; do
+            scp "${shared_connection[@]}" "publish/$file_name" \
+              "$DEPLOY_USER@$DEPLOY_HOST:$DEPLOY_DIR/.$file_name.$GITHUB_RUN_ID"
+          done
+
+          ssh "${shared_connection[@]}" "$DEPLOY_USER@$DEPLOY_HOST" \
+            "mv '$DEPLOY_DIR/.us_snd_model_results.html.$GITHUB_RUN_ID' '$DEPLOY_DIR/us_snd_model_results.html' && \
+             mv '$DEPLOY_DIR/.us_snd_model_results.ipynb.$GITHUB_RUN_ID' '$DEPLOY_DIR/us_snd_model_results.ipynb' && \
+             mv '$DEPLOY_DIR/.predictors_crude.html.$GITHUB_RUN_ID' '$DEPLOY_DIR/predictors_crude.html' && \
+             mv '$DEPLOY_DIR/.predictors_crude.ipynb.$GITHUB_RUN_ID' '$DEPLOY_DIR/predictors_crude.ipynb' && \
+             chmod 644 '$DEPLOY_DIR/us_snd_model_results.html' '$DEPLOY_DIR/us_snd_model_results.ipynb' \
+               '$DEPLOY_DIR/predictors_crude.html' '$DEPLOY_DIR/predictors_crude.ipynb'"
+
+          ssh -S "$control_path" -O exit "$DEPLOY_USER@$DEPLOY_HOST" || true
